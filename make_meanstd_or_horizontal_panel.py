@@ -31,6 +31,14 @@ class MeanStdHorizontalController(param.Parameterized):
         default=False,
         doc="Mask (x, y) where cover_slb == 0 in lsm.inp_001.nc",
     )
+    mask_cover_positive = param.Boolean(
+        default=False,
+        doc="Mask (x, y) where cover_slb > 0 in lsm.inp_001.nc",
+    )
+    symmetric_cmap = param.Boolean(
+        default=False,
+        doc="Force symmetric color limits around 0 for horizontal view",
+    )
 
 
 def make_meanstd_or_horizontal_panel(
@@ -60,32 +68,46 @@ def make_meanstd_or_horizontal_panel(
         controller.param["time_index"].bounds = (0, max(n_time - 1, 0))
 
     cover_mask = build_cover_mask(ds_raw, ds_lsm)
+    cover_mask_positive = build_cover_mask(ds_raw, ds_lsm, keep_zero=True)
     ds_masked = apply_horizontal_mask(ds_raw, cover_mask)
+    ds_masked_positive = apply_horizontal_mask(ds_raw, cover_mask_positive)
 
     ds_mean, ds_std = stat_fn(ds_raw)
     ds_mean_masked = None
     ds_std_masked = None
+    ds_mean_masked_positive = None
+    ds_std_masked_positive = None
     if ds_masked is not None:
         ds_mean_masked, ds_std_masked = stat_fn(ds_masked)
+    if ds_masked_positive is not None:
+        ds_mean_masked_positive, ds_std_masked_positive = stat_fn(ds_masked_positive)
+
+    def _ensure_exclusive(event):
+        if event.new:
+            if event.name == "mask_cover":
+                controller.mask_cover_positive = False
+            elif event.name == "mask_cover_positive":
+                controller.mask_cover = False
+
+    controller.param.watch(_ensure_exclusive, ["mask_cover", "mask_cover_positive"])
 
     ms_param_stream = streams.Params(
         controller,
-        parameters=["label", "view", "mask_cover"],
+        parameters=["label", "view", "mask_cover", "mask_cover_positive"],
     )
 
     @catchall
     def ms_fn(**kwargs):
         label = controller.label
-        current_mean = (
-            ds_mean_masked
-            if controller.mask_cover and ds_mean_masked is not None
-            else ds_mean
-        )
-        current_std = (
-            ds_std_masked
-            if controller.mask_cover and ds_std_masked is not None
-            else ds_std
-        )
+        if controller.mask_cover and ds_mean_masked is not None:
+            current_mean = ds_mean_masked
+            current_std = ds_std_masked
+        elif controller.mask_cover_positive and ds_mean_masked_positive is not None:
+            current_mean = ds_mean_masked_positive
+            current_std = ds_std_masked_positive
+        else:
+            current_mean = ds_mean
+            current_std = ds_std
 
         if label is None:
             return hv.Curve([])
@@ -122,15 +144,27 @@ def make_meanstd_or_horizontal_panel(
     hz_range_stream = streams.RangeXY()
     hz_param_stream = streams.Params(
         controller,
-        parameters=["label", "time_index", "view", "auto", "trigger", "mask_cover"],
+        parameters=[
+            "label",
+            "time_index",
+            "view",
+            "auto",
+            "trigger",
+            "mask_cover",
+            "mask_cover_positive",
+            "symmetric_cmap",
+        ],
     )
 
     @catchall
     def hz_fn(x_range=None, y_range=None, **kwargs):
         label = controller.label
-        base_ds = (
-            ds_masked if controller.mask_cover and ds_masked is not None else ds_raw
-        )
+        if controller.mask_cover and ds_masked is not None:
+            base_ds = ds_masked
+        elif controller.mask_cover_positive and ds_masked_positive is not None:
+            base_ds = ds_masked_positive
+        else:
+            base_ds = ds_raw
 
         if label is None:
             return hv.Curve([])
@@ -164,6 +198,11 @@ def make_meanstd_or_horizontal_panel(
             controller.auto,
             controller.trigger,
         )
+
+        if controller.symmetric_cmap:
+            vmax_abs = max(abs(vmin), abs(vmax))
+            vmin, vmax = -vmax_abs, vmax_abs
+
         clim, cmap = determine_clim_and_cmap(vmin, vmax)
 
         title = label
@@ -228,13 +267,26 @@ def make_meanstd_or_horizontal_panel(
         name="Mask where cover_slb = 0",
         button_type="primary",
     )
+    mask_positive_toggle = pn.widgets.Toggle.from_param(
+        controller.param.mask_cover_positive,
+        name="Mask where cover_slb > 0",
+        button_type="warning",
+    )
+    sym_toggle = pn.widgets.Toggle.from_param(
+        controller.param.symmetric_cmap,
+        name="Symmetric clim around 0",
+        button_type="primary",
+    )
     mask_toggle.disabled = cover_mask is None
+    mask_positive_toggle.disabled = cover_mask_positive is None
 
     controls = pn.Column(
         var_select,
         mode_toggle,
         time_slider,
         mask_toggle,
+        mask_positive_toggle,
+        sym_toggle,
         auto_checkbox,
         button_view,
         button_global,

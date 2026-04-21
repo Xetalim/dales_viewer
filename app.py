@@ -169,6 +169,10 @@ class SLRBController(param.Parameterized):
         default=False,
         doc="Mask (x, y) where cover_slb == 0 in lsm.inp_001.nc",
     )
+    mask_cover_positive = param.Boolean(
+        default=False,
+        doc="Mask (x, y) where cover_slb > 0 in lsm.inp_001.nc",
+    )
 
 
 def _build_slrbcross_cover_mask(ds_slrb, ds_lsm):
@@ -191,6 +195,7 @@ def make_slrbcross_panel(ds, ds_lsm=None):
 
     # Optional cover_slb-based mask from lsm.inp_001.nc
     cover_mask = _build_slrbcross_cover_mask(ds, ds_lsm)
+    cover_mask_positive = build_cover_mask(ds, ds_lsm, keep_zero=True)
 
     # Pre-compute mean and std over horizontal dims for all variables
     horiz_dims = [d for d in ("xt", "yt") if d in ds.dims]
@@ -198,12 +203,23 @@ def make_slrbcross_panel(ds, ds_lsm=None):
     ds_std = ds.std(dim=horiz_dims, keep_attrs=True) if horiz_dims else None
 
     ds_masked = None
+    ds_masked_positive = None
     ds_mean_masked = None
     ds_std_masked = None
+    ds_mean_masked_positive = None
+    ds_std_masked_positive = None
     if cover_mask is not None and horiz_dims:
         ds_masked = apply_horizontal_mask(ds, cover_mask)
         ds_mean_masked = ds_masked.mean(dim=horiz_dims, keep_attrs=True, skipna=True)
         ds_std_masked = ds_masked.std(dim=horiz_dims, keep_attrs=True, skipna=True)
+    if cover_mask_positive is not None and horiz_dims:
+        ds_masked_positive = apply_horizontal_mask(ds, cover_mask_positive)
+        ds_mean_masked_positive = ds_masked_positive.mean(
+            dim=horiz_dims, keep_attrs=True, skipna=True
+        )
+        ds_std_masked_positive = ds_masked_positive.std(
+            dim=horiz_dims, keep_attrs=True, skipna=True
+        )
 
     controller = SLRBController()
     controller.param["category"].objects = cat_names
@@ -220,6 +236,15 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         n_zts = int(ds.sizes["zts"])
         controller.param["zts_index"].bounds = (0, max(n_zts - 1, 0))
 
+    def _ensure_exclusive(event):
+        if event.new:
+            if event.name == "mask_cover":
+                controller.mask_cover_positive = False
+            elif event.name == "mask_cover_positive":
+                controller.mask_cover = False
+
+    controller.param.watch(_ensure_exclusive, ["mask_cover", "mask_cover_positive"])
+
     def _update_vars(event):
         cat = controller.category
         var_list = categories.get(cat, [])
@@ -231,7 +256,14 @@ def make_slrbcross_panel(ds, ds_lsm=None):
     # --- Mean/std DynamicMap ---
     ms_param_stream = streams.Params(
         controller,
-        parameters=["category", "variable", "zts_index", "view", "mask_cover"],
+        parameters=[
+            "category",
+            "variable",
+            "zts_index",
+            "view",
+            "mask_cover",
+            "mask_cover_positive",
+        ],
     )
 
     @catchall
@@ -240,14 +272,15 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         zts_idx = controller.zts_index
 
         # Choose masked or unmasked statistics based on availability and toggle
-        use_masked = cover_mask is not None and controller.mask_cover
-
-        cur_ds_mean = (
-            ds_mean_masked if use_masked and ds_mean_masked is not None else ds_mean
-        )
-        cur_ds_std = (
-            ds_std_masked if use_masked and ds_std_masked is not None else ds_std
-        )
+        if controller.mask_cover and ds_mean_masked is not None:
+            cur_ds_mean = ds_mean_masked
+            cur_ds_std = ds_std_masked
+        elif controller.mask_cover_positive and ds_mean_masked_positive is not None:
+            cur_ds_mean = ds_mean_masked_positive
+            cur_ds_std = ds_std_masked_positive
+        else:
+            cur_ds_mean = ds_mean
+            cur_ds_std = ds_std
 
         if var_name is None or var_name not in cur_ds_mean:
             return hv.Curve([])
@@ -281,6 +314,7 @@ def make_slrbcross_panel(ds, ds_lsm=None):
             "auto",
             "trigger",
             "mask_cover",
+            "mask_cover_positive",
         ],
     )
 
@@ -292,15 +326,12 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         auto = controller.auto
         trigger = controller.trigger
 
-        base_ds = (
-            ds_masked
-            if (
-                cover_mask is not None
-                and ds_masked is not None
-                and controller.mask_cover
-            )
-            else ds
-        )
+        if controller.mask_cover and ds_masked is not None:
+            base_ds = ds_masked
+        elif controller.mask_cover_positive and ds_masked_positive is not None:
+            base_ds = ds_masked_positive
+        else:
+            base_ds = ds
 
         if var_name is None or var_name not in base_ds:
             return hv.Curve([])
@@ -393,8 +424,14 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         name="Mask where cover_slb = 0",
         button_type="primary",
     )
+    mask_positive_toggle = pn.widgets.Toggle.from_param(
+        controller.param.mask_cover_positive,
+        name="Mask where cover_slb > 0",
+        button_type="warning",
+    )
     # If no mask information is available, disable the toggle
     mask_toggle.disabled = cover_mask is None
+    mask_positive_toggle.disabled = cover_mask_positive is None
 
     controls = pn.Column(
         cat_select,
@@ -403,6 +440,7 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         time_slider,
         zts_slider,
         mask_toggle,
+        mask_positive_toggle,
         auto_checkbox,
         button_view,
         button_global,
@@ -889,4 +927,5 @@ if __name__ == "__main__":
     pn.extension(exception_handler=_print_exception)
 
     app = make_app(args.folder)
+    print("Launching DALES viewer... on port", args.port)
     pn.serve(app, show=True, port=args.port, admin=True)

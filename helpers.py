@@ -4,11 +4,12 @@ import numpy as np
 import xarray as xr
 
 
-def build_cover_mask(ds_target, ds_lsm):
+def build_cover_mask(ds_target, ds_lsm, keep_zero=False):
     """Return a horizontal mask aligned to *ds_target* from lsm cover_slb.
 
-    The mask contains 1 where cover_slb > 0 and NaN elsewhere so masked
-    locations disappear from plots and are ignored by skipna reductions.
+    By default the mask keeps cells where ``cover_slb > 0`` and masks zeros.
+    When ``keep_zero=True``, it keeps cells where ``cover_slb == 0`` and masks
+    positive-cover cells instead.
     """
 
     if ds_lsm is None or "cover_slb" not in ds_lsm:
@@ -33,7 +34,12 @@ def build_cover_mask(ds_target, ds_lsm):
     if not set(cover.dims).issubset(set(ds_target.dims)):
         return None
 
-    return xr.where(cover > 0, 1.0, np.nan).reset_coords(drop=True)
+    if keep_zero:
+        mask = xr.where(cover == 0, 1.0, np.nan)
+    else:
+        mask = xr.where(cover > 0, 1.0, np.nan)
+
+    return mask.reset_coords(drop=True)
 
 
 def apply_horizontal_mask(ds, mask):
@@ -90,26 +96,49 @@ def _compute_slice_clim(
       it is computed at most once per variable.
     """
 
+    def _finite_minmax(da):
+        """Return finite min/max for a DataArray, or (nan, nan) if unavailable."""
+        try:
+            finite_da = da.where(np.isfinite(da))
+            v0 = float(finite_da.min(skipna=True))
+            v1 = float(finite_da.max(skipna=True))
+        except (TypeError, ValueError):
+            return np.nan, np.nan
+
+        if np.isfinite(v0) and np.isfinite(v1):
+            return v0, v1
+        return np.nan, np.nan
+
     # Start from the sliced data range (cheap compared to full_da)
-    vmin = float(sliced_da.min(skipna=True))
-    vmax = float(sliced_da.max(skipna=True))
+    vmin, vmax = _finite_minmax(sliced_da)
 
     use_view = x_range is not None and y_range is not None and (auto or trigger > 0)
     if use_view:
         x0, x1 = x_range
         y0, y1 = y_range
-        view_da = sliced_da
-        if xdim in view_da.coords:
-            view_da = view_da.sel({xdim: slice(x0, x1)})
-        if ydim in view_da.coords:
-            view_da = view_da.sel({ydim: slice(y0, y1)})
-        if view_da.size > 0:
-            v_view = float(view_da.min(skipna=True))
-            V_view = float(view_da.max(skipna=True))
 
-            # Only override with the view-based clim when it is finite.
-            if np.isfinite(v_view) and np.isfinite(V_view):
-                vmin, vmax = v_view, V_view
+        # Guard against invalid or reversed ranges coming from backend reset/switch events.
+        if all(np.isfinite(v) for v in (x0, x1, y0, y1)):
+            if x0 > x1:
+                x0, x1 = x1, x0
+            if y0 > y1:
+                y0, y1 = y1, y0
+
+            view_da = sliced_da
+            try:
+                if xdim in view_da.coords:
+                    view_da = view_da.sel({xdim: slice(x0, x1)})
+                if ydim in view_da.coords:
+                    view_da = view_da.sel({ydim: slice(y0, y1)})
+            except (KeyError, TypeError, ValueError):
+                view_da = sliced_da
+
+            if view_da.size > 0:
+                v_view, V_view = _finite_minmax(view_da)
+
+                # Only override with the view-based clim when it is finite.
+                if np.isfinite(v_view) and np.isfinite(V_view):
+                    vmin, vmax = v_view, V_view
 
     # Final safety check: if something still produced non-finite limits,
     # fall back to a cached global range (computed at most once).
@@ -118,12 +147,20 @@ def _compute_slice_clim(
         gmax = full_da.attrs.get("_global_vmax", None)
 
         if gmin is None or gmax is None:
-            gmin = float(full_da.min(skipna=True))
-            gmax = float(full_da.max(skipna=True))
+            gmin, gmax = _finite_minmax(full_da)
             full_da.attrs["_global_vmin"] = gmin
             full_da.attrs["_global_vmax"] = gmax
 
         vmin, vmax = gmin, gmax
+
+    # Last-resort defaults keep the plot and colorbar stable for all-NaN slices.
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        vmin, vmax = 0.0, 1.0
+
+    if vmin == vmax:
+        pad = 1.0 if vmin == 0 else 0.01 * abs(vmin)
+        vmin -= pad
+        vmax += pad
 
     return vmin, vmax
 

@@ -89,6 +89,10 @@ def make_slice_panel(ds, slice_dim=None):
             ],
         )
 
+        # Track the plotted axis context so we only hard-reset start/end when
+        # switching to a different coordinate system (e.g. zt->yt slice mode).
+        axis_context = {"key": None}
+
         @catchall
         def _slice_fn_dynamic(x_range=None, y_range=None, **kwargs):
             var_label = controller.var
@@ -158,6 +162,25 @@ def make_slice_panel(ds, slice_dim=None):
             )
 
             backend_opts = _build_backend_bounds(ds, xdim, ydim)
+
+            current_key = (var_name, dim, xdim, ydim)
+            if axis_context["key"] != current_key:
+                if xdim in ds.coords:
+                    x0 = float(ds[xdim].min(skipna=True).values)
+                    x1 = float(ds[xdim].max(skipna=True).values)
+                    backend_opts["x_range.start"] = x0
+                    backend_opts["x_range.end"] = x1
+                    backend_opts["x_range.reset_start"] = x0
+                    backend_opts["x_range.reset_end"] = x1
+                if ydim in ds.coords:
+                    y0 = float(ds[ydim].min(skipna=True).values)
+                    y1 = float(ds[ydim].max(skipna=True).values)
+                    backend_opts["y_range.start"] = y0
+                    backend_opts["y_range.end"] = y1
+                    backend_opts["y_range.reset_start"] = y0
+                    backend_opts["y_range.reset_end"] = y1
+                axis_context["key"] = current_key
+
             return plot.opts(backend_opts=backend_opts)
 
         dmap = hv.DynamicMap(
@@ -169,6 +192,13 @@ def make_slice_panel(ds, slice_dim=None):
         )
 
         range_stream.source = dmap
+
+        def _reset_view_range(_event):
+            # When switching variable/slice dimension, old backend ranges can be
+            # incompatible with the new axes and yield empty view selections.
+            range_stream.event(x_range=None, y_range=None)
+
+        controller.param.watch(_reset_view_range, ["dim", "var"])
 
         plot = pn.panel(dmap, sizing_mode="stretch_width")
 
