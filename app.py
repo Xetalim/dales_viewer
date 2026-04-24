@@ -23,10 +23,12 @@ from helpers import (
     get_label_to_var,
     catchall,
 )
+from make_colstat_panel import make_colstat_panel
 from make_fielddump_slice_panel import make_fielddump_slice_panel
 from make_heat_panel_with_clim_controls import make_heat_panel_with_clim_controls
 from make_meanstd_or_horizontal_panel import make_meanstd_or_horizontal_panel
 from make_slice_panel import make_slice_panel
+from make_virtualmeasurement_panel import make_virtualmeasurement_panel
 from preprocessors import cape, crosses, profiles
 
 hv.extension("bokeh")
@@ -50,7 +52,9 @@ def _open_dataset_optional(path, postprocess=None):
 
     try:
         if os.path.isfile(path):
-            ds = xr.open_dataset(path, chunks={"time": "auto"})
+            ds = xr.open_dataset(
+                path, chunks={"time": 16, "xt": -1, "yt": -1, "xm": -1, "ym": -1}
+            )
         else:
             return None
     except FileNotFoundError:
@@ -61,8 +65,10 @@ def _open_dataset_optional(path, postprocess=None):
 def _open_mfdataset_optional(path, postprocess=None):
     """Open a dataset if it exists, optionally apply a postprocess function."""
     try:
-        ds = xr.open_mfdataset(glob.glob(path), chunks={"time": "auto"})
-    except FileNotFoundError, OSError:
+        ds = xr.open_mfdataset(
+            glob.glob(path), chunks={"time": 16, "xt": -1, "yt": -1, "xm": -1, "ym": -1}
+        )
+    except (FileNotFoundError, OSError):
         return None
     return postprocess(ds) if postprocess is not None else ds
 
@@ -115,7 +121,48 @@ def _load_datasets(output_path):
         (output_path / "run_001").as_posix() + "/slurbcross_*.nc"
     )
 
+    ds["virtualmeasurement"] = _load_point_nc_files(
+        output_path, "virtualmeasurement", preprocess_fn=virt_residual
+    )
+    ds["colstat"] = _load_point_nc_files(output_path, "colstat")
+
     return ds
+
+
+def virt_residual(ds):
+    ds["residual"] = -ds["radbal"] + -ds["shf"] + -ds["lhf"] + ds["ghf"]
+    return ds
+
+
+def _load_point_nc_files(output_path, prefix, preprocess_fn=None):
+    """Load all ``<prefix>.<xi>.<yj>.nc`` files and return a label→dataset dict.
+
+    Searches both the run root and the ``run_001`` sub-directory.  Each
+    dataset is labelled using its ``locx``/``locy`` global attributes (physical
+    metres) when available, falling back to the file stem.
+
+    Returns ``None`` when no matching files are found.
+    """
+    result = {}
+    for search_dir in [output_path, output_path / "run_001"]:
+        if not search_dir.exists():
+            continue
+        for f in sorted(search_dir.glob(f"{prefix}.*.*.nc")):
+            try:
+                ds = xr.open_dataset(f)
+                locx = ds.attrs.get("locx", None)
+                locy = ds.attrs.get("locy", None)
+                if locx is not None and locy is not None:
+                    label = f"x={float(locx):.0f}m, y={float(locy):.0f}m"
+                else:
+                    label = f.stem
+                # Avoid overwriting an already-loaded dataset with the same label.
+                if label in result:
+                    label = f.stem
+                result[label] = preprocess_fn(ds) if preprocess_fn is not None else ds
+            except Exception:
+                pass
+    return result or None
 
 
 # ---- Input file panel builders ----
@@ -751,149 +798,252 @@ def make_tmser_panel(ds):
 
 def make_app(folder):
     output_path = pathlib.Path(folder)
-    ds = _load_datasets(output_path)
-
     grid = pn.GridSpec(sizing_mode="stretch_width")
+    ds_cache = {}
 
-    def _p(msg):
-        return pn.panel(msg, sizing_mode="stretch_width")
+    def _lazy_file_cell(title, key, missing_msg, load_fn, build_fn):
+        content = pn.Column(
+            pn.pane.Markdown(f"{missing_msg}  \\n+Click **Load** to open this file."),
+            sizing_mode="stretch_width",
+        )
 
-    grid[0, 0] = (
-        make_heat_panel_with_clim_controls(ds["prof"])
-        if ds["prof"] is not None
-        else _p("profiles.001.nc not loaded")
+        button = pn.widgets.Button(
+            name=f"Load {title}", button_type="primary", width=200
+        )
+
+        def _on_click(event):
+            try:
+                button.name = f"Loading {title}..."
+                button.disabled = True
+
+                ds_cache[key] = load_fn()
+                data = ds_cache[key]
+
+                if data is None:
+                    content.objects = [pn.pane.Markdown(missing_msg)]
+                    button.name = f"Load {title}"
+                    button.disabled = False
+                    return
+
+                content.objects = [build_fn(data)]
+                button.name = f"Loaded {title}"
+                button.button_type = "success"
+            except Exception as ex:
+                content.objects = [
+                    pn.pane.Markdown(f"Failed to load **{title}**: `{ex}`")
+                ]
+                button.name = f"Load {title}"
+                button.disabled = False
+
+        button.on_click(_on_click)
+
+        return pn.Column(
+            pn.pane.Markdown(f"### {title}"),
+            button,
+            content,
+            sizing_mode="stretch_width",
+        )
+
+    def _load_profiles():
+        ds_profiles = _open_dataset_optional(
+            output_path / "run_001" / "profiles.001.nc"
+        )
+        return profiles(ds_profiles) if ds_profiles is not None else None
+
+    def _load_openboundaries():
+        ob_files = sorted((output_path / "input").glob("openboundaries.inp.*.nc"))
+        return xr.open_dataset(ob_files[0]) if ob_files else None
+
+    # Row 0
+    grid[0, 0] = _lazy_file_cell(
+        "profiles.001.nc",
+        "prof",
+        "profiles.001.nc not loaded",
+        _load_profiles,
+        make_heat_panel_with_clim_controls,
     )
-    grid[0, 1] = (
-        make_tmser_panel(ds["tmser"])
-        if ds["tmser"] is not None
-        else _p("tmser.001.nc not loaded")
+    grid[0, 1] = _lazy_file_cell(
+        "tmser.001.nc",
+        "tmser",
+        "tmser.001.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "run_001" / "tmser.001.nc"),
+        make_tmser_panel,
     )
-    grid[1, 0] = (
-        make_meanstd_or_horizontal_panel(
-            ds["cape_raw"],
+
+    # Row 1
+    grid[1, 0] = _lazy_file_cell(
+        "cape.nc",
+        "cape_raw",
+        "cape.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "cape.nc")
+        or _open_dataset_optional(output_path / "run_001" / "cape.001.nc"),
+        lambda d: make_meanstd_or_horizontal_panel(
+            d,
             cape,
             slice_dim="time",
             toggle_label="CAPE view",
-            ds_lsm=ds["lsm"],
-        )
-        if ds["cape_raw"] is not None
-        else _p("cape.nc not loaded")
+            ds_lsm=ds_cache.get("lsm"),
+        ),
     )
-    grid[1, 1] = (
-        make_meanstd_or_horizontal_panel(
-            ds["crosses_raw"],
+    grid[1, 1] = _lazy_file_cell(
+        "surfcross.nc",
+        "crosses_raw",
+        "surfcross.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "surfcross.nc")
+        or _open_dataset_optional(output_path / "run_001" / "surfcross.001.nc"),
+        lambda d: make_meanstd_or_horizontal_panel(
+            d,
             crosses,
             slice_dim="time",
             toggle_label="Surfcross view",
-            ds_lsm=ds["lsm"],
-        )
-        if ds["crosses_raw"] is not None
-        else _p("surfcross.nc not loaded")
-    )
-    grid[2, 0] = (
-        make_heat_panel_with_clim_controls(ds["sampling"])
-        if ds["sampling"] is not None
-        else _p("sampling.001.nc not loaded")
-    )
-    grid[2, 1] = (
-        make_heat_panel_with_clim_controls(ds["samptend"])
-        if ds["samptend"] is not None
-        else _p("samptend.001.nc not loaded")
+            ds_lsm=ds_cache.get("lsm"),
+        ),
     )
 
-    grid[3, 0] = (
-        make_slice_panel(ds["crossxz"], "yt")
-        if ds["crossxz"] is not None
-        else _p("crossxz.nc not loaded")
+    # Row 2
+    grid[2, 0] = _lazy_file_cell(
+        "sampling.001.nc",
+        "sampling",
+        "sampling.001.nc not loaded",
+        lambda: _open_dataset_optional(
+            output_path / "run_001" / "sampling.001.nc", postprocess=profiles
+        ),
+        make_heat_panel_with_clim_controls,
     )
-    grid[3, 1] = (
-        make_slice_panel(ds["crossyz"], "xt")
-        if ds["crossyz"] is not None
-        else _p("crossyz.nc not loaded")
-    )
-    grid[4, 0] = (
-        make_slice_panel(ds["crossxy"], "zt")
-        if ds["crossxy"] is not None
-        else _p("crossxy.nc not loaded")
-    )
-    grid[4, 1] = (
-        make_fielddump_slice_panel(ds["fielddump"])
-        if ds["fielddump"] is not None
-        else _p("fielddump.nc not loaded")
-    )
-    grid[5, 0] = (
-        make_fielddump_slice_panel(ds["dump"])
-        if ds["dump"] is not None
-        else _p("all_dump.nc not loaded")
-    )
-    grid[5, 1] = (
-        make_slice_panel(ds["openboundaries"], "time")
-        if ds["openboundaries"] is not None
-        else _p("openboundaries.inp.*.nc not loaded")
+    grid[2, 1] = _lazy_file_cell(
+        "samptend.001.nc",
+        "samptend",
+        "samptend.001.nc not loaded",
+        lambda: _open_dataset_optional(
+            output_path / "run_001" / "samptend.001.nc", postprocess=profiles
+        ),
+        make_heat_panel_with_clim_controls,
     )
 
-    radfield_pane = (
-        make_meanstd_or_horizontal_panel(
-            ds["radfield_raw"],
+    # Row 3
+    grid[3, 0] = _lazy_file_cell(
+        "crossxz.nc",
+        "crossxz",
+        "crossxz.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "crossxz.nc"),
+        lambda d: make_slice_panel(d, "yt"),
+    )
+    grid[3, 1] = _lazy_file_cell(
+        "crossyz.nc",
+        "crossyz",
+        "crossyz.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "crossyz.nc"),
+        lambda d: make_slice_panel(d, "xt"),
+    )
+
+    # Row 4
+    grid[4, 0] = _lazy_file_cell(
+        "crossxy.nc",
+        "crossxy",
+        "crossxy.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "crossxy.nc"),
+        lambda d: make_slice_panel(d, "zt"),
+    )
+    grid[4, 1] = _lazy_file_cell(
+        "fielddump.nc",
+        "fielddump",
+        "fielddump.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "fielddump.nc")
+        or _open_dataset_optional(output_path / "run_001" / "fielddump.001.nc"),
+        make_fielddump_slice_panel,
+    )
+
+    # Row 5
+    grid[5, 0] = _lazy_file_cell(
+        "all_dump.nc",
+        "dump",
+        "all_dump.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "all_dump.nc"),
+        make_fielddump_slice_panel,
+    )
+    grid[5, 1] = _lazy_file_cell(
+        "openboundaries.inp.*.nc",
+        "openboundaries",
+        "openboundaries.inp.*.nc not loaded",
+        _load_openboundaries,
+        lambda d: make_slice_panel(d, "time"),
+    )
+
+    # Row 6
+    grid[6, 0] = _lazy_file_cell(
+        "lsm.inp_001.nc",
+        "lsm",
+        "lsm.inp_001.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "input" / "lsm.inp_001.nc"),
+        make_lsm_panel,
+    )
+    grid[6, 1] = _lazy_file_cell(
+        "inslurb.001.nc",
+        "inslurb",
+        "inslurb.001.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "input" / "inslurb.001.nc"),
+        make_2d_xy_panel,
+    )
+
+    # Row 7
+    grid[7, 0] = _lazy_file_cell(
+        "init.001.nc",
+        "init",
+        "init.001.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "input" / "init.001.nc"),
+        make_init_profile_panel,
+    )
+    grid[7, 1] = _lazy_file_cell(
+        "forcings.001.nc",
+        "forcings",
+        "forcings.001.nc not loaded",
+        lambda: _prepare_forcings(
+            _open_dataset_optional(output_path / "input" / "forcings.001.nc")
+        ),
+        make_heat_panel_with_clim_controls,
+    )
+
+    # Row 8
+    grid[8, 0] = _lazy_file_cell(
+        "slrbcross.nc",
+        "slrbcross",
+        "slrbcross.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "slrbcross.nc")
+        or _open_mfdataset_optional(
+            (output_path / "run_001").as_posix() + "/slurbcross_*.nc"
+        ),
+        lambda d: make_slrbcross_panel(d, ds_cache.get("lsm")),
+    )
+    grid[8, 1] = _lazy_file_cell(
+        "radfield.nc",
+        "radfield_raw",
+        "radfield.nc not loaded",
+        lambda: _open_dataset_optional(output_path / "radfield.nc")
+        or _open_dataset_optional(output_path / "run_001" / "radfield.001.nc"),
+        lambda d: make_meanstd_or_horizontal_panel(
+            d,
             cape,
             slice_dim="time",
             toggle_label="Radfield view",
-            ds_lsm=ds["lsm"],
-        )
-        if ds["radfield_raw"] is not None
-        else _p("radfield.nc not loaded")
+            ds_lsm=ds_cache.get("lsm"),
+        ),
     )
 
-    grid[6, 0] = (
-        pn.Column(
-            pn.pane.Markdown("### lsm.inp_001.nc"),
-            make_lsm_panel(ds["lsm"]),
-            sizing_mode="stretch_width",
-        )
-        if ds["lsm"] is not None
-        else _p("lsm.inp_001.nc not loaded")
+    # Row 9
+    grid[9, 0] = _lazy_file_cell(
+        "virtualmeasurement.X.Y.nc",
+        "virtualmeasurement",
+        "No virtualmeasurement.X.Y.nc files found",
+        lambda: _load_point_nc_files(output_path, "virtualmeasurement"),
+        make_virtualmeasurement_panel,
     )
-    grid[6, 1] = (
-        pn.Column(
-            pn.pane.Markdown("### inslurb.001.nc"),
-            make_2d_xy_panel(ds["inslurb"]),
-            sizing_mode="stretch_width",
-        )
-        if ds["inslurb"] is not None
-        else _p("inslurb.001.nc not loaded")
+    grid[9, 1] = _lazy_file_cell(
+        "colstat.X.Y.nc",
+        "colstat",
+        "No colstat.X.Y.nc files found",
+        lambda: _load_point_nc_files(output_path, "colstat"),
+        make_colstat_panel,
     )
-    grid[7, 0] = (
-        pn.Column(
-            pn.pane.Markdown("### init.001.nc"),
-            make_init_profile_panel(ds["init"]),
-            sizing_mode="stretch_width",
-        )
-        if ds["init"] is not None
-        else _p("init.001.nc not loaded")
-    )
-
-    if ds["forcings"] is not None:
-        ds["forcings"]["uv_timedep"] = np.sqrt(
-            ds["forcings"]["ug_timedep"] ** 2 + ds["forcings"]["vg_timedep"] ** 2
-        )
-        grid[7, 1] = pn.Column(
-            pn.pane.Markdown("### forcings.001.nc"),
-            make_heat_panel_with_clim_controls(ds["forcings"]),
-            sizing_mode="stretch_width",
-        )
-    else:
-        grid[7, 1] = _p("forcings.001.nc not loaded")
-
-    grid[8, 0] = (
-        pn.Column(
-            pn.pane.Markdown("### slrbcross.nc"),
-            make_slrbcross_panel(ds["slrbcross"], ds["lsm"]),
-            sizing_mode="stretch_width",
-        )
-        if ds["slrbcross"] is not None
-        else _p("slrbcross.nc not loaded")
-    )
-    grid[8, 1] = radfield_pane
 
     header = pn.Row(
         pn.pane.Markdown(f"# {output_path.resolve()}"),
@@ -907,14 +1057,26 @@ def make_app(folder):
     )
 
 
+def _prepare_forcings(ds):
+    """Add derived forcings diagnostics for plotting."""
+    if ds is None:
+        return None
+    if "ug_timedep" in ds and "vg_timedep" in ds:
+        ds["uv_timedep"] = np.sqrt(ds["ug_timedep"] ** 2 + ds["vg_timedep"] ** 2)
+    return ds
+
+
 if __name__ == "__main__":
     import argparse
+    from dask.distributed import Client
 
     parser = argparse.ArgumentParser(description="DALES viewer")
     parser.add_argument(
         "folder", nargs="?", default=".", help="Path to DALES output folder"
     )
     parser.add_argument("--port", type=int, default=5007)
+    parser.add_argument("--dask", type=int, default=38227)
+    parser.add_argument("--show", type=bool, default=True)
     args = parser.parse_args()
 
     pn.config.console_output = "accumulate"
@@ -925,7 +1087,7 @@ if __name__ == "__main__":
         traceback.print_exception(type(ex), ex, ex.__traceback__, file=sys.stderr)
 
     pn.extension(exception_handler=_print_exception)
-
+    # client = Client(f"tcp://127.0.0.1:{args.dask}")
     app = make_app(args.folder)
     print("Launching DALES viewer... on port", args.port)
-    pn.serve(app, show=True, port=args.port, admin=True)
+    pn.serve(app, show=args.show, port=args.port, admin=True)
