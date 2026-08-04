@@ -302,6 +302,9 @@ def plot_2d_heatmap(
     vmin=None,
     vmax=None,
     height=300,
+    width=None,
+    responsive=True,
+    equal_aspect=False,
 ):
     """Render a 2D heatmap with shared clim and backend-bound handling."""
     if full_da is None:
@@ -333,8 +336,10 @@ def plot_2d_heatmap(
         "colorbar": True,
         "title": title,
         "frame_height": height,
-        "responsive": True,
+        "responsive": responsive,
     }
+    if width is not None:
+        plot_kwargs["frame_width"] = width
 
     plot = da.hvplot(**plot_kwargs)
 
@@ -344,6 +349,9 @@ def plot_2d_heatmap(
         backend_opts.update(extra_backend_opts)
 
     plot_opts = {}
+    if equal_aspect:
+        plot_opts["aspect"] = 1
+        plot_opts["data_aspect"] = 1
     if _is_horizontal_map_dims(xdim, ydim):
         # Keep map geometry stable without letting coordinate spans over-stretch.
         plot_opts["aspect"] = 1

@@ -30,6 +30,7 @@ def make_slice_panel(ds, slice_dim=None):
 
     label_to_var = get_label_to_var(ds)
     labels = list(label_to_var.keys())
+    slice_plot_size = 520
 
     if not labels:
         return pn.pane.Markdown("No compatible variables", sizing_mode="stretch_width")
@@ -241,6 +242,10 @@ def make_slice_panel(ds, slice_dim=None):
                 symmetric_cmap=symmetric,
                 bounds_source=ds,
                 extra_backend_opts=extra_backend_opts,
+                height=slice_plot_size,
+                width=slice_plot_size,
+                responsive=False,
+                equal_aspect=True,
             )
 
         dmap = hv.DynamicMap(
@@ -260,7 +265,7 @@ def make_slice_panel(ds, slice_dim=None):
 
         controller.param.watch(_reset_view_range, ["dim", "var"])
 
-        plot = pn.panel(dmap, sizing_mode="stretch_width")
+        plot = pn.panel(dmap, sizing_mode="fixed")
 
         var_select = pn.widgets.Select.from_param(controller.param.var, name="Variable")
         dim_select = pn.widgets.Select.from_param(
@@ -411,6 +416,10 @@ def make_slice_panel(ds, slice_dim=None):
             trigger=trigger,
             symmetric_cmap=symmetric,
             bounds_source=ds,
+            height=slice_plot_size,
+            width=slice_plot_size,
+            responsive=False,
+            equal_aspect=True,
         )
 
     dmap = hv.DynamicMap(slice_fn, streams=[range_stream, param_stream]).opts(
@@ -421,7 +430,7 @@ def make_slice_panel(ds, slice_dim=None):
 
     range_stream.source = dmap
 
-    plot = pn.panel(dmap, sizing_mode="stretch_width")
+    plot = pn.panel(dmap, sizing_mode="fixed")
 
     var_select = pn.widgets.Select.from_param(controller.param.var, name="Variable")
     index_slider = pn.widgets.IntSlider.from_param(
@@ -515,7 +524,10 @@ def make_slice_panel(ds, slice_dim=None):
                 bounds_source=ds,
                 vmin=vmin,
                 vmax=vmax,
-                height=300,
+                height=slice_plot_size,
+                width=slice_plot_size,
+                responsive=False,
+                equal_aspect=True,
             )
 
         hmap = hv.HoloMap(frames, kdims=[dim_eff])
