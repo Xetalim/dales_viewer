@@ -9,16 +9,16 @@ selector, and two view modes:
               time index.
 """
 
-import numpy as np
 import param
 import holoviews as hv
 import panel as pn
 from holoviews import streams
 
 from helpers import (
-    determine_clim_and_cmap,
     get_label_to_var,
     _make_clim_controls,
+    make_plot_with_controls_layout,
+    plot_2d_heatmap,
 )
 
 
@@ -139,43 +139,18 @@ def make_colstat_panel(datasets):
                     )
                 return hv.Curve([])
 
-            vmin = float(da.min(skipna=True))
-            vmax = float(da.max(skipna=True))
-
-            use_view = (
-                x_range is not None
-                and y_range is not None
-                and (controller.auto or controller.trigger > 0)
-            )
-            if use_view:
-                t0, t1 = x_range
-                z0, z1 = y_range
-                if all(np.isfinite(v) for v in (t0, t1, z0, z1)):
-                    view_da = da
-                    if "time" in view_da.dims:
-                        view_da = view_da.sel(time=slice(t0, t1))
-                    view_da = view_da.sel({zdim: slice(z0, z1)})
-                    if view_da.size > 0:
-                        try:
-                            v_v = float(view_da.min(skipna=True))
-                            V_v = float(view_da.max(skipna=True))
-                            if np.isfinite(v_v) and np.isfinite(V_v) and v_v != V_v:
-                                vmin, vmax = v_v, V_v
-                        except ValueError:
-                            pass
-
-            clim, cmap = determine_clim_and_cmap(vmin, vmax)
             title = var_label + _loc_str(ds)
-
-            return da.hvplot(
-                x="time",
-                y=zdim,
-                cmap=cmap,
-                clim=clim,
-                colorbar=True,
+            return plot_2d_heatmap(
+                da,
+                xdim="time",
+                ydim=zdim,
                 title=title,
-                height=300,
-                responsive=True,
+                full_da=da,
+                x_range=x_range,
+                y_range=y_range,
+                auto=controller.auto,
+                trigger=controller.trigger,
+                bounds_source=ds,
             )
         except Exception:
             import traceback, sys
@@ -300,7 +275,7 @@ def make_colstat_panel(datasets):
         auto_checkbox,
         button_view,
         button_global,
-        width=250,
+        sizing_mode="stretch_width",
     )
 
-    return pn.Row(plot_area, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot_area, controls)

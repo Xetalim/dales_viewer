@@ -1,10 +1,13 @@
-from controllers import _select_plot_dims
+from _meanstd_overlay import _meanstd_overlay
 from helpers import (
-    _build_backend_bounds,
-    _compute_slice_clim,
     _make_clim_controls,
+    append_indexed_dim_to_title,
+    apply_horizontal_mask,
+    build_cover_mask,
     catchall,
-    determine_clim_and_cmap,
+    make_plot_with_controls_layout,
+    plot_2d_heatmap,
+    slice_to_2d,
 )
 
 import holoviews as hv
@@ -45,21 +48,28 @@ def _parse_slrb_categories(ds):
     return {k: sorted(v) for k, v in categories.items() if v}
 
 
-class SlrbHorizontalController(param.Parameterized):
+class SLRBController(param.Parameterized):
     category = param.ObjectSelector(default=None, objects=[], label="Category")
     variable = param.ObjectSelector(default=None, objects=[], label="Variable")
     time_index = param.Integer(default=0, bounds=(0, 0), label="Time index")
     zts_index = param.Integer(default=0, bounds=(0, 0), label="zts layer")
+    view = param.ObjectSelector(
+        default="mean/std", objects=["mean/std", "horizontal"], label="View"
+    )
     auto = param.Boolean(default=True, doc="Automatically set clim from current view")
     trigger = param.Integer(default=0, doc="Manual trigger to recompute clim from view")
-    symmetric_cmap = param.Boolean(
+    mask_cover = param.Boolean(
         default=False,
-        doc="Force symmetric color limits around 0",
+        doc="Mask (x, y) where cover_slb == 0 in lsm.inp_001.nc",
+    )
+    mask_cover_positive = param.Boolean(
+        default=False,
+        doc="Mask (x, y) where cover_slb > 0 in lsm.inp_001.nc",
     )
 
 
 def make_slrbcross_panel(ds, ds_lsm=None):
-    """Panel for slrbcross.nc — horizontal view only, no masking or mean/std."""
+    """Panel for slrbcross.nc with category filtering, mean/std and masking."""
 
     categories = _parse_slrb_categories(ds)
     cat_names = list(categories.keys())
@@ -67,7 +77,33 @@ def make_slrbcross_panel(ds, ds_lsm=None):
     if not cat_names:
         return pn.pane.Markdown("No variables", sizing_mode="stretch_width")
 
-    controller = SlrbHorizontalController()
+    cover_mask = build_cover_mask(ds, ds_lsm)
+    cover_mask_positive = build_cover_mask(ds, ds_lsm, keep_zero=True)
+
+    horiz_dims = [d for d in ("xt", "yt") if d in ds.dims]
+    ds_mean = ds.mean(dim=horiz_dims, keep_attrs=True) if horiz_dims else ds
+    ds_std = ds.std(dim=horiz_dims, keep_attrs=True) if horiz_dims else None
+
+    ds_masked = None
+    ds_masked_positive = None
+    ds_mean_masked = None
+    ds_std_masked = None
+    ds_mean_masked_positive = None
+    ds_std_masked_positive = None
+    if cover_mask is not None and horiz_dims:
+        ds_masked = apply_horizontal_mask(ds, cover_mask)
+        ds_mean_masked = ds_masked.mean(dim=horiz_dims, keep_attrs=True, skipna=True)
+        ds_std_masked = ds_masked.std(dim=horiz_dims, keep_attrs=True, skipna=True)
+    if cover_mask_positive is not None and horiz_dims:
+        ds_masked_positive = apply_horizontal_mask(ds, cover_mask_positive)
+        ds_mean_masked_positive = ds_masked_positive.mean(
+            dim=horiz_dims, keep_attrs=True, skipna=True
+        )
+        ds_std_masked_positive = ds_masked_positive.std(
+            dim=horiz_dims, keep_attrs=True, skipna=True
+        )
+
+    controller = SLRBController()
     controller.param["category"].objects = cat_names
     controller.category = cat_names[0]
 
@@ -82,7 +118,16 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         n_zts = int(ds.sizes["zts"])
         controller.param["zts_index"].bounds = (0, max(n_zts - 1, 0))
 
-    def _update_vars(event):
+    def _ensure_exclusive(event):
+        if event.new:
+            if event.name == "mask_cover":
+                controller.mask_cover_positive = False
+            elif event.name == "mask_cover_positive":
+                controller.mask_cover = False
+
+    controller.param.watch(_ensure_exclusive, ["mask_cover", "mask_cover_positive"])
+
+    def _update_vars(_event):
         cat = controller.category
         var_list = categories.get(cat, [])
         controller.param["variable"].objects = var_list
@@ -90,6 +135,53 @@ def make_slrbcross_panel(ds, ds_lsm=None):
 
     controller.param.watch(_update_vars, "category")
 
+    # --- Mean/std DynamicMap ---
+    ms_param_stream = streams.Params(
+        controller,
+        parameters=[
+            "category",
+            "variable",
+            "zts_index",
+            "view",
+            "mask_cover",
+            "mask_cover_positive",
+        ],
+    )
+
+    @catchall
+    def ms_fn(**_kwargs):
+        var_name = controller.variable
+        zts_idx = controller.zts_index
+
+        if controller.mask_cover and ds_mean_masked is not None:
+            cur_ds_mean = ds_mean_masked
+            cur_ds_std = ds_std_masked
+        elif controller.mask_cover_positive and ds_mean_masked_positive is not None:
+            cur_ds_mean = ds_mean_masked_positive
+            cur_ds_std = ds_std_masked_positive
+        else:
+            cur_ds_mean = ds_mean
+            cur_ds_std = ds_std
+
+        if var_name is None or var_name not in cur_ds_mean:
+            return hv.Curve([])
+
+        da_m = cur_ds_mean[var_name]
+        da_s = cur_ds_std[var_name]
+
+        if "zts" in da_m.dims:
+            da_m = da_m.isel(zts=zts_idx)
+            da_s = da_s.isel(zts=zts_idx)
+
+        if "time" not in da_m.dims:
+            return hv.Curve([])
+
+        return _meanstd_overlay(da_m, da_s, title=var_name)
+
+    ms_dmap = hv.DynamicMap(ms_fn, streams=[ms_param_stream]).opts(framewise=True)
+    ms_plot = pn.panel(ms_dmap, sizing_mode="stretch_width")
+
+    # --- Horizontal slice DynamicMap ---
     hz_range_stream = streams.RangeXY()
     hz_param_stream = streams.Params(
         controller,
@@ -98,76 +190,69 @@ def make_slrbcross_panel(ds, ds_lsm=None):
             "variable",
             "time_index",
             "zts_index",
+            "view",
             "auto",
             "trigger",
-            "symmetric_cmap",
+            "mask_cover",
+            "mask_cover_positive",
         ],
     )
 
     @catchall
-    def hz_fn(x_range=None, y_range=None, **kwargs):
+    def hz_fn(x_range=None, y_range=None, **_kwargs):
         var_name = controller.variable
         t_idx = controller.time_index
         zts_idx = controller.zts_index
 
-        if var_name is None or var_name not in ds:
+        if controller.mask_cover and ds_masked is not None:
+            base_ds = ds_masked
+        elif controller.mask_cover_positive and ds_masked_positive is not None:
+            base_ds = ds_masked_positive
+        else:
+            base_ds = ds
+
+        if var_name is None or var_name not in base_ds:
             return hv.Curve([])
 
-        da = ds[var_name]
-        sel = {}
-        if "time" in da.dims:
-            sel["time"] = t_idx
-        if "zts" in da.dims:
-            sel["zts"] = zts_idx
-
-        sliced = da.isel(sel, drop=True)
-
-        remaining = list(sliced.dims)
-        if len(remaining) < 2:
+        da = base_ds[var_name]
+        sliced, xdim, ydim, _sel = slice_to_2d(da, time=t_idx, zts=zts_idx)
+        if xdim is None or ydim is None:
             return hv.Curve([])
-
-        xdim = "xt" if "xt" in remaining else remaining[0]
-        ydim = "yt" if "yt" in remaining else remaining[1]
-        if xdim == ydim:
-            ydim = remaining[0] if remaining[0] != xdim else remaining[1]
-
-        vmin, vmax = _compute_slice_clim(
-            da,
-            sliced,
-            xdim,
-            ydim,
-            x_range,
-            y_range,
-            controller.auto,
-            controller.trigger,
-        )
-
-        if controller.symmetric_cmap:
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
-
-        clim, cmap = determine_clim_and_cmap(vmin, vmax)
 
         title = var_name
-        if "time" in da.dims and "time" in ds.coords:
-            t_val = str(ds.time.isel(time=t_idx).values)[:19]
-            title += f" @ {t_val}"
+        if "time" in da.dims:
+            title = append_indexed_dim_to_title(
+                title,
+                ds,
+                "time",
+                t_idx,
+                separator=" @ ",
+                use_coord=True,
+                formatter=lambda value: str(value)[:19],
+            )
         if "zts" in da.dims:
-            title += f", zts idx {zts_idx}"
+            title = append_indexed_dim_to_title(
+                title,
+                ds,
+                "zts",
+                zts_idx,
+                separator=", ",
+                use_coord=False,
+            )
 
-        plot = sliced.hvplot(
-            x=xdim,
-            y=ydim,
-            cmap=cmap,
-            clim=clim,
-            colorbar=True,
+        return plot_2d_heatmap(
+            sliced,
+            xdim=xdim,
+            ydim=ydim,
             title=title,
-            height=300,
-            width=400,
+            full_da=da,
+            x_range=x_range,
+            y_range=y_range,
+            auto=controller.auto,
+            trigger=controller.trigger,
+            bounds_source=base_ds,
+            # responsive=True,
         )
-
-        backend_opts = _build_backend_bounds(ds, xdim, ydim)
-        return plot.opts(backend_opts=backend_opts)
 
     hz_dmap = hv.DynamicMap(hz_fn, streams=[hz_range_stream, hz_param_stream]).opts(
         framewise=False,
@@ -177,11 +262,25 @@ def make_slrbcross_panel(ds, ds_lsm=None):
     hz_range_stream.source = hz_dmap
     hz_plot = pn.panel(hz_dmap, sizing_mode="stretch_width")
 
+    plot_area = pn.Column(ms_plot, sizing_mode="stretch_width")
+
+    def _toggle_view(*_events):
+        hz_range_stream.event(x_range=None, y_range=None)
+        if controller.view == "mean/std":
+            plot_area.objects = [ms_plot]
+        else:
+            plot_area.objects = [hz_plot]
+
+    controller.param.watch(_toggle_view, ["view"])
+
     cat_select = pn.widgets.Select.from_param(
         controller.param.category, name="Category"
     )
     var_select = pn.widgets.Select.from_param(
         controller.param.variable, name="Variable"
+    )
+    view_select = pn.widgets.RadioButtonGroup.from_param(
+        controller.param.view, name="View", button_type="default"
     )
     time_slider = pn.widgets.IntSlider.from_param(
         controller.param.time_index, name="Time index"
@@ -193,22 +292,31 @@ def make_slrbcross_panel(ds, ds_lsm=None):
 
     auto_checkbox, button_view, button_global = _make_clim_controls(controller)
 
-    sym_toggle = pn.widgets.Toggle.from_param(
-        controller.param.symmetric_cmap,
-        name="Symmetric clim around 0",
+    mask_toggle = pn.widgets.Toggle.from_param(
+        controller.param.mask_cover,
+        name="Mask where cover_slb = 0",
         button_type="primary",
     )
+    mask_positive_toggle = pn.widgets.Toggle.from_param(
+        controller.param.mask_cover_positive,
+        name="Mask where cover_slb > 0",
+        button_type="warning",
+    )
+    mask_toggle.disabled = cover_mask is None
+    mask_positive_toggle.disabled = cover_mask_positive is None
 
     controls = pn.Column(
         cat_select,
         var_select,
+        view_select,
         time_slider,
         zts_slider,
-        sym_toggle,
+        mask_toggle,
+        mask_positive_toggle,
         auto_checkbox,
         button_view,
         button_global,
-        width=250,
+        sizing_mode="stretch_width",
     )
 
-    return pn.Row(hz_plot, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot_area, controls)

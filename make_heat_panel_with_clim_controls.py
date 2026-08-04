@@ -1,8 +1,8 @@
 from _heatmap_element import _heatmap_element
 from _profile_element import _profile_element
-from helpers import _make_clim_controls
+from helpers import _make_clim_controls, make_plot_with_controls_layout
 from controllers import ClimController
-from helpers import _detect_vertical_dim, get_label_to_var, catchall
+from helpers import _detect_vertical_dim, get_label_to_var
 
 
 import holoviews as hv
@@ -11,7 +11,6 @@ from holoviews import streams
 import numpy as np
 
 
-@catchall
 def make_heat_panel_with_clim_controls(ds):
     label_to_var = get_label_to_var(ds)
 
@@ -31,13 +30,21 @@ def make_heat_panel_with_clim_controls(ds):
         controller, parameters=["label", "auto", "trigger", "mode"]
     )
 
-    def heat_fn(x_range=None, y_range=None, **kwargs):
+    def _reduce_to_time_and_vertical(da, ydim):
+        """Select index 0 on non-(time, ydim) dims so 2D plotting always works."""
+        keep = {"time", ydim}
+        extra_dims = [dim for dim in da.dims if dim not in keep]
+        if not extra_dims:
+            return da
+        return da.isel({dim: 0 for dim in extra_dims}, drop=True)
+
+    def heat_fn(x_range=None, y_range=None, **_kwargs):
         label = controller.label
         auto = controller.auto
         trigger = controller.trigger
 
         if label is None:
-            return hv.NdOverlay({})
+            raise RuntimeError("No variable selected for heatmap view")
 
         var = label_to_var[label]
         da = ds[var]
@@ -52,25 +59,24 @@ def make_heat_panel_with_clim_controls(ds):
                     x=dim,
                     title=label,
                     height=300,
-                    responsive=True,
+                    responsive="width",
                 )
 
             # If there is a recognizable vertical dimension, treat it as
             # a vertical profile (value vs height).
-            try:
-                ydim = _detect_vertical_dim(da)
-                z_vals = ds[ydim].values if ydim in ds else da[ydim].values
-                x_vals = da.values
-                return hv.Curve((x_vals, z_vals), var, ydim).opts(
-                    xlabel=label,
-                    ylabel=ydim,
-                    title=label,
-                    height=300,
-                    responsive=True,
-                )
-            except Exception:
-                # As a last resort, return an empty curve.
-                return hv.Curve([])
+            ydim = _detect_vertical_dim(da)
+            z_vals = ds[ydim].values if ydim in ds else da[ydim].values
+            x_vals = da.values
+            return hv.Curve((x_vals, z_vals), var, ydim).opts(
+                xlabel=label,
+                ylabel=ydim,
+                title=label,
+                height=300,
+                responsive="width",
+                framewise=False,
+                shared_axes=False,
+                axiswise=True,
+            )
 
         # If the variable has a vertical dimension (zt/zm/zh), show a 2D
         # heatmap with clim controls. Otherwise, fall back to a 1D time
@@ -86,7 +92,7 @@ def make_heat_panel_with_clim_controls(ds):
                 x="time",
                 title=label,
                 height=300,
-                responsive=True,
+                responsive="width",
             ).opts(
                 backend_opts={
                     "x_range.bounds": (
@@ -96,14 +102,20 @@ def make_heat_panel_with_clim_controls(ds):
                 }
             )
 
-        full_da = da
+        da_plot = _reduce_to_time_and_vertical(da, ydim)
+        if "time" not in da_plot.dims or ydim not in da_plot.dims or da_plot.ndim != 2:
+            raise RuntimeError(
+                f"Variable '{label}' is not plottable as time-height after reduction: dims={da_plot.dims}"
+            )
+
+        full_da = da_plot
         try:
             vmin = float(full_da.min(skipna=True))
             vmax = float(full_da.max(skipna=True))
-        except ValueError:
+        except ValueError as exc:
             raise ValueError(
                 f"Variable {label} has non-numeric data {full_da.values} {ds}"
-            )
+            ) from exc
 
         use_view = x_range is not None and y_range is not None and (auto or trigger > 0)
         if use_view:
@@ -128,7 +140,19 @@ def make_heat_panel_with_clim_controls(ds):
                     vmin = 0.0
                     vmax = 1.0
 
-        return _heatmap_element(ds, full_da, label, ydim, vmin, vmax)
+        # Keep clim valid for first render (e.g. all-NaN/constant slices),
+        # otherwise Bokeh/HoloViews may omit the colorbar until a later update.
+        if not np.isfinite(vmin) or not np.isfinite(vmax):
+            vmin, vmax = 0.0, 1.0
+        elif vmin == vmax:
+            pad = 1.0 if vmin == 0 else 0.01 * abs(vmin)
+            vmin -= pad
+            vmax += pad
+
+        view = _heatmap_element(ds, da_plot, label, ydim, vmin, vmax)
+        if view is None:
+            raise RuntimeError(f"Heatmap renderer returned None for variable '{label}'")
+        return view
 
     heat_dmap = hv.DynamicMap(
         heat_fn,
@@ -143,19 +167,19 @@ def make_heat_panel_with_clim_controls(ds):
         controller, parameters=["label", "time_index", "mode"]
     )
 
-    def profile_fn(**kwargs):
+    def profile_fn(**_kwargs):
         label = controller.label
         time_index = controller.time_index
 
         if label is None:
-            return hv.Curve([])
+            raise RuntimeError("No variable selected for profile view")
 
         var = label_to_var[label]
         da = ds[var]
 
         # If there is no time axis, nothing to display.
         if "time" not in da.dims:
-            return hv.Curve([])
+            raise RuntimeError(f"Variable '{label}' has no time axis for profile view")
 
         # For fields without a vertical dimension, reuse the 1D time series
         # view instead of a vertical profile.
@@ -166,18 +190,29 @@ def make_heat_panel_with_clim_controls(ds):
                 x="time",
                 title=label,
                 height=300,
-                responsive=True,
+                responsive="width",
             )
 
-        return _profile_element(ds, da, label, ydim, time_index)
+        da_profile = _reduce_to_time_and_vertical(da, ydim)
+        if "time" not in da_profile.dims or ydim not in da_profile.dims:
+            raise RuntimeError(
+                f"Variable '{label}' is not plottable as profile after reduction: dims={da_profile.dims}"
+            )
+
+        view = _profile_element(ds, da_profile, label, ydim, time_index)
+        if view is None:
+            raise RuntimeError(f"Profile renderer returned None for variable '{label}'")
+        return view
 
     profile_dmap = hv.DynamicMap(
         profile_fn,
         streams=[profile_param_stream],
     ).opts(
         framewise=True,
+        shared_axes=False,
+        axiswise=True,
         height=300,
-        responsive=True,
+        responsive="width",
     )
 
     profile_plot = pn.panel(profile_dmap, sizing_mode="stretch_width")
@@ -185,14 +220,19 @@ def make_heat_panel_with_clim_controls(ds):
     # Toggle between views by swapping Column contents
     plot_area = pn.Column(heat_plot, sizing_mode="stretch_width")
 
-    def _toggle_view(*events):
+    def _toggle_view(*_events):
         range_stream.event(x_range=None, y_range=None)
         if controller.mode == "heatmap":
             plot_area.objects = [heat_plot]
         else:
             plot_area.objects = [profile_plot]
 
+    def _reset_heat_range_on_var_change(_event):
+        # Avoid carrying incompatible x/y ranges between variables.
+        range_stream.event(x_range=None, y_range=None)
+
     controller.param.watch(_toggle_view, ["mode"])
+    controller.param.watch(_reset_heat_range_on_var_change, ["label"])
 
     var_select = pn.widgets.Select.from_param(controller.param.label, name="Variable")
     mode_toggle = pn.widgets.RadioButtonGroup.from_param(
@@ -213,4 +253,4 @@ def make_heat_panel_with_clim_controls(ds):
         sizing_mode="stretch_width",
     )
 
-    return pn.Row(plot_area, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot_area, controls)

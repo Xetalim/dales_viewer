@@ -3,6 +3,8 @@ import panel as pn
 import numpy as np
 import xarray as xr
 
+from controllers import _select_plot_dims
+
 
 def build_cover_mask(ds_target, ds_lsm, keep_zero=False):
     """Return a horizontal mask aligned to *ds_target* from lsm cover_slb.
@@ -172,7 +174,7 @@ def _detect_vertical_dim(da):
     known vertical dimensions are present, a ValueError is raised.
     """
 
-    for dim in ("zt", "zm", "zh"):
+    for dim in ("zf", "zt", "zm", "zh", "zts"):
         if dim in da.dims:
             return dim
     raise ValueError(f"{da.name} has no vertical dimension")
@@ -200,20 +202,191 @@ def get_variable_dim(ds):
     )
 
 
+def append_indexed_dim_to_title(
+    title,
+    ds,
+    dim,
+    idx,
+    *,
+    separator=", ",
+    use_coord=True,
+    formatter=None,
+):
+    """Append a dimension/value or dimension/index suffix to a plot title."""
+    if use_coord and dim in ds.coords:
+        value = ds[dim].isel({dim: idx}).values
+        formatted = formatter(value) if formatter is not None else str(value)[:19]
+        return f"{title}{separator}{dim}={formatted}"
+    return f"{title}{separator}{dim} index {idx}"
+
+
+def slice_to_2d(da, **indexers):
+    """Return a 2D slice plus plotting dims from a DataArray and indexers."""
+    slice_sel = {dim: idx for dim, idx in indexers.items() if dim in da.dims}
+    other_dims = [dim for dim in da.dims if dim not in slice_sel]
+    if len(other_dims) != 2:
+        return None, None, None, slice_sel
+
+    xdim, ydim = _select_plot_dims(other_dims)
+    if xdim is None or ydim is None:
+        return None, None, None, slice_sel
+
+    return da.isel(slice_sel, drop=True), xdim, ydim, slice_sel
+
+
 def _build_backend_bounds(ds, xdim, ydim):
     """Build axis bounds backend options when matching coordinates are available."""
+
+    def _coord_bounds(source, dim):
+        if dim not in source.coords:
+            return None
+
+        coord = source[dim]
+        try:
+            vmin = coord.min(skipna=True).values
+            vmax = coord.max(skipna=True).values
+        except TypeError:
+            # Some coordinate dtypes do not support skipna.
+            vmin = coord.min().values
+            vmax = coord.max().values
+
+        # Keep datetime-like bounds as-is for bokeh datetime axes.
+        if np.issubdtype(np.asarray(vmin).dtype, np.datetime64):
+            return vmin, vmax
+
+        # Numeric bounds: only set when finite.
+        try:
+            fmin = float(vmin)
+            fmax = float(vmax)
+        except (TypeError, ValueError):
+            return None
+
+        if np.isfinite(fmin) and np.isfinite(fmax):
+            return fmin, fmax
+        return None
+
     backend_opts = {}
-    if xdim in ds.coords:
-        backend_opts["x_range.bounds"] = (
-            float(ds[xdim].min(skipna=True).values),
-            float(ds[xdim].max(skipna=True).values),
-        )
-    if ydim in ds.coords:
-        backend_opts["y_range.bounds"] = (
-            float(ds[ydim].min(skipna=True).values),
-            float(ds[ydim].max(skipna=True).values),
-        )
+
+    xb = _coord_bounds(ds, xdim)
+    if xb is not None:
+        backend_opts["x_range.bounds"] = xb
+
+    yb = _coord_bounds(ds, ydim)
+    if yb is not None:
+        backend_opts["y_range.bounds"] = yb
+
     return backend_opts
+
+
+def _is_horizontal_map_dims(xdim, ydim):
+    """Return True when dimensions represent a horizontal x-y map."""
+    x_like = {"x", "xt", "xm"}
+    y_like = {"y", "yt", "ym"}
+    return (xdim in x_like and ydim in y_like) or (xdim in y_like and ydim in x_like)
+
+
+def plot_2d_heatmap(
+    da,
+    *,
+    xdim,
+    ydim,
+    title,
+    full_da=None,
+    x_range=None,
+    y_range=None,
+    auto=False,
+    trigger=0,
+    symmetric_cmap=False,
+    bounds_source=None,
+    extra_backend_opts=None,
+    vmin=None,
+    vmax=None,
+    height=300,
+):
+    """Render a 2D heatmap with shared clim and backend-bound handling."""
+    if full_da is None:
+        full_da = da
+
+    if vmin is None or vmax is None:
+        vmin, vmax = _compute_slice_clim(
+            full_da,
+            da,
+            xdim,
+            ydim,
+            x_range,
+            y_range,
+            auto,
+            trigger,
+        )
+
+    if symmetric_cmap:
+        vmax_abs = max(abs(vmin), abs(vmax))
+        vmin, vmax = -vmax_abs, vmax_abs
+
+    clim, cmap = determine_clim_and_cmap(vmin, vmax)
+
+    plot_kwargs = {
+        "x": xdim,
+        "y": ydim,
+        "cmap": cmap,
+        "clim": clim,
+        "colorbar": True,
+        "title": title,
+        "frame_height": height,
+        "responsive": "width",
+    }
+
+    plot = da.hvplot(**plot_kwargs)
+
+    source = bounds_source if bounds_source is not None else da
+    backend_opts = _build_backend_bounds(source, xdim, ydim)
+    if extra_backend_opts:
+        backend_opts.update(extra_backend_opts)
+
+    plot_opts = {}
+    if _is_horizontal_map_dims(xdim, ydim):
+        # Keep map geometry stable without letting coordinate spans over-stretch.
+        plot_opts["aspect"] = 1
+    if backend_opts:
+        plot_opts["backend_opts"] = backend_opts
+
+    return plot.opts(**plot_opts) if plot_opts else plot
+
+
+def _stretch_controls_widgets(component):
+    """Recursively make control widgets fill the available width."""
+    if isinstance(component, pn.widgets.Widget):
+        component.sizing_mode = "stretch_width"
+        return
+
+    if hasattr(component, "objects"):
+        for obj in component.objects:
+            _stretch_controls_widgets(obj)
+
+
+def make_plot_with_controls_layout(plot, controls, *, controls_width=250):
+    """Lay out a plot above controls without forcing horizontal page scroll."""
+    _stretch_controls_widgets(controls)
+
+    plot_col = pn.Column(
+        plot,
+        sizing_mode="stretch_width",
+        styles={"min-width": "0", "min-height": "320px", "overflow-x": "hidden"},
+    )
+    controls_col = pn.Column(
+        controls,
+        sizing_mode="stretch_width",
+        styles={
+            "min-width": "0",
+            "max-width": f"{controls_width}px",
+            "overflow-x": "hidden",
+        },
+    )
+    return pn.Column(
+        plot_col,
+        controls_col,
+        sizing_mode="stretch_width",
+    )
 
 
 def _make_clim_controls(controller):
@@ -226,12 +399,16 @@ def _make_clim_controls(controller):
         name="Reset clim from global", button_type="default"
     )
 
-    def _on_click(event):
+    def _on_click(_event):
         controller.trigger += 1
 
-    def _on_global_click(event):
+    def _on_global_click(_event):
         controller.auto = False
         controller.trigger = 0
+
+    auto_checkbox.sizing_mode = "stretch_width"
+    button_view.sizing_mode = "stretch_width"
+    button_global.sizing_mode = "stretch_width"
 
     button_view.on_click(_on_click)
     button_global.on_click(_on_global_click)

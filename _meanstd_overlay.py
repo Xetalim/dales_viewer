@@ -15,4 +15,4 @@ def _meanstd_overlay(da_mean, da_std, title=None):
         hover=False,
     )
     line = da_mean.hvplot(x="time", title=label)
-    return (line * band).opts(height=300, responsive=True)
+    return (line * band).opts(frame_height=300, responsive="width")

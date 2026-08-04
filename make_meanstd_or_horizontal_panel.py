@@ -1,14 +1,14 @@
 from _meanstd_overlay import _meanstd_overlay
-from controllers import _select_plot_dims
 from helpers import (
-    _build_backend_bounds,
-    _compute_slice_clim,
     _make_clim_controls,
+    append_indexed_dim_to_title,
     apply_horizontal_mask,
     build_cover_mask,
     catchall,
-    determine_clim_and_cmap,
     get_label_to_var,
+    make_plot_with_controls_layout,
+    plot_2d_heatmap,
+    slice_to_2d,
 )
 
 import holoviews as hv
@@ -97,7 +97,7 @@ def make_meanstd_or_horizontal_panel(
     )
 
     @catchall
-    def ms_fn(**kwargs):
+    def ms_fn(**_kwargs):
         label = controller.label
         if controller.mask_cover and ds_mean_masked is not None:
             current_mean = ds_mean_masked
@@ -157,7 +157,7 @@ def make_meanstd_or_horizontal_panel(
     )
 
     @catchall
-    def hz_fn(x_range=None, y_range=None, **kwargs):
+    def hz_fn(x_range=None, y_range=None, **_kwargs):
         label = controller.label
         if controller.mask_cover and ds_masked is not None:
             base_ds = ds_masked
@@ -177,57 +177,31 @@ def make_meanstd_or_horizontal_panel(
         if slice_dim not in da.dims:
             return hv.Curve([])
 
-        slice_sel = {slice_dim: controller.time_index}
-        other_dims = [d for d in da.dims if d not in slice_sel]
-        if len(other_dims) != 2:
-            return hv.Curve([])
-
-        xdim, ydim = _select_plot_dims(other_dims)
+        sliced, xdim, ydim, _slice_sel = slice_to_2d(
+            da, **{slice_dim: controller.time_index}
+        )
         if xdim is None or ydim is None:
             return hv.Curve([])
-
-        sliced = da.isel(slice_sel, drop=True)
-
-        vmin, vmax = _compute_slice_clim(
-            da,
+        title = append_indexed_dim_to_title(
+            label,
+            base_ds,
+            slice_dim,
+            controller.time_index,
+            separator=" @ ",
+        )
+        return plot_2d_heatmap(
             sliced,
-            xdim,
-            ydim,
-            x_range,
-            y_range,
-            controller.auto,
-            controller.trigger,
-        )
-
-        if controller.symmetric_cmap:
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
-
-        clim, cmap = determine_clim_and_cmap(vmin, vmax)
-
-        title = label
-        if slice_dim in da.dims:
-            if slice_dim in base_ds.coords:
-                slice_val = (
-                    base_ds[slice_dim].isel({slice_dim: controller.time_index}).values
-                )
-                title += f" @ {slice_dim}={str(slice_val)[:19]}"
-            else:
-                title += f" @ {slice_dim} index {controller.time_index}"
-
-        plot = sliced.hvplot(
-            x=xdim,
-            y=ydim,
-            cmap=cmap,
-            clim=clim,
-            colorbar=True,
+            xdim=xdim,
+            ydim=ydim,
             title=title,
-            height=300,
-            responsive=True,
+            full_da=da,
+            x_range=x_range,
+            y_range=y_range,
+            auto=controller.auto,
+            trigger=controller.trigger,
+            symmetric_cmap=controller.symmetric_cmap,
+            bounds_source=base_ds,
         )
-
-        backend_opts = _build_backend_bounds(base_ds, xdim, ydim)
-        return plot.opts(backend_opts=backend_opts)
 
     hz_dmap = hv.DynamicMap(hz_fn, streams=[hz_range_stream, hz_param_stream]).opts(
         framewise=False,
@@ -239,7 +213,7 @@ def make_meanstd_or_horizontal_panel(
 
     plot_area = pn.Column(ms_plot, sizing_mode="stretch_width")
 
-    def _toggle_view(*events):
+    def _toggle_view(*_events):
         hz_range_stream.event(x_range=None, y_range=None)
         if controller.view == "Mean/std over horizontal":
             plot_area.objects = [ms_plot]
@@ -290,7 +264,7 @@ def make_meanstd_or_horizontal_panel(
         auto_checkbox,
         button_view,
         button_global,
-        width=250,
+        sizing_mode="stretch_width",
     )
 
-    return pn.Row(plot_area, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot_area, controls)

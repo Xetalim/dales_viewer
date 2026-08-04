@@ -1,13 +1,12 @@
+from controllers import SliceController, FielddumpSliceController
 from helpers import (
-    determine_clim_and_cmap,
-)
-from controllers import SliceController, FielddumpSliceController, _select_plot_dims
-from helpers import (
-    _build_backend_bounds,
-    _compute_slice_clim,
     _make_clim_controls,
+    append_indexed_dim_to_title,
     get_label_to_var,
     catchall,
+    make_plot_with_controls_layout,
+    plot_2d_heatmap,
+    slice_to_2d,
 )
 
 
@@ -34,6 +33,66 @@ def make_slice_panel(ds, slice_dim=None):
 
     if not labels:
         return pn.pane.Markdown("No compatible variables", sizing_mode="stretch_width")
+
+    def _resolve_slice_dim_for_var(da_var, requested_dim):
+        """Resolve requested slice dim to an available dim on the variable.
+
+        This treats zt/zm as interchangeable index grids for cross-sections:
+        when a variable is only available on one of them, keep the selected
+        index and transparently use the available sister dimension.
+        """
+
+        if requested_dim in da_var.dims:
+            return requested_dim
+
+        sister_dim = {"zt": "zm", "zm": "zt"}.get(requested_dim)
+        if sister_dim in da_var.dims:
+            return sister_dim
+
+        return None
+
+    def _paired_slice_dims(dim_name):
+        return {
+            "zt": "zm",
+            "zm": "zt",
+            "xt": "xm",
+            "xm": "xt",
+            "yt": "ym",
+            "ym": "yt",
+        }.get(dim_name)
+
+    def _build_slice_indexers(da_var, requested_dim, idx):
+        """Build indexers, slicing staggered sister dims at the same index.
+
+        Some DALES fields carry both staggered dimensions (e.g. zt and zm).
+        To keep a single logical slice coordinate for users, apply the same
+        index to both when both are present.
+        """
+
+        dim_eff = _resolve_slice_dim_for_var(da_var, requested_dim)
+        if dim_eff is None:
+            return None, None
+
+        indexers = {dim_eff: idx}
+        sister_dim = _paired_slice_dims(dim_eff)
+        if sister_dim in da_var.dims:
+            indexers[sister_dim] = idx
+
+        return indexers, dim_eff
+
+    def _shared_index_size(da_var, requested_dim):
+        """Return valid index length, constrained across staggered sisters."""
+
+        dim_eff = _resolve_slice_dim_for_var(da_var, requested_dim)
+        if dim_eff is None:
+            return None, None
+
+        sizes = [int(da_var.sizes[dim_eff])]
+        sister_dim = _paired_slice_dims(dim_eff)
+        if sister_dim in da_var.dims:
+            sizes.append(int(da_var.sizes[sister_dim]))
+
+        return min(sizes), dim_eff
 
     # --- Dynamic slice-dimension mode (fielddump-style) ---
     if slice_dim is None:
@@ -64,16 +123,26 @@ def make_slice_panel(ds, slice_dim=None):
             controller.time_index = 0
             controller.param["time_index"].bounds = (0, max(n_time - 1, 0))
 
-        def _update_index_bounds(event):
+        def _update_index_bounds(_event):
+            var_label = controller.var
             dim = controller.dim
-            if dim not in ds.dims:
+            if var_label is None or dim is None:
                 return
-            n_loc = int(ds.sizes[dim])
+
+            var_name = label_to_var.get(var_label)
+            if var_name is None:
+                return
+
+            da_var = ds[var_name]
+            n_loc, _dim_eff = _shared_index_size(da_var, dim)
+            if n_loc is None:
+                return
+
             controller.param["index"].bounds = (0, max(n_loc - 1, 0))
             if controller.index > n_loc - 1:
                 controller.index = n_loc - 1
 
-        controller.param.watch(_update_index_bounds, "dim")
+        controller.param.watch(_update_index_bounds, ["dim", "var"])
 
         range_stream = streams.RangeXY()
         param_stream = streams.Params(
@@ -94,7 +163,7 @@ def make_slice_panel(ds, slice_dim=None):
         axis_context = {"key": None}
 
         @catchall
-        def _slice_fn_dynamic(x_range=None, y_range=None, **kwargs):
+        def _slice_fn_dynamic(x_range=None, y_range=None, **_kwargs):
             var_label = controller.var
             dim = controller.dim
             idx = controller.index
@@ -109,79 +178,70 @@ def make_slice_panel(ds, slice_dim=None):
             var_name = label_to_var[var_label]
             da_var = ds[var_name]
 
-            if dim not in da_var.dims:
+            indexers, dim_eff = _build_slice_indexers(da_var, dim, idx)
+            if indexers is None:
                 return hv.Curve([])
 
             # Slice along chosen dimension and, if available, time
-            slice_sel = {dim: idx}
-            if "time" in da_var.dims:
-                slice_sel["time"] = t_idx
-
-            other_dims = [d for d in da_var.dims if d not in slice_sel]
-            if len(other_dims) != 2:
-                return hv.Curve([])
-
-            xdim, ydim = _select_plot_dims(other_dims)
+            sliced, xdim, ydim, _slice_sel = slice_to_2d(
+                da_var, **{**indexers, "time": t_idx}
+            )
             if xdim is None or ydim is None:
                 return hv.Curve([])
 
-            sliced = da_var.isel(slice_sel)
-
-            vmin, vmax = _compute_slice_clim(
-                da_var, sliced, xdim, ydim, x_range, y_range, auto, trigger
+            title = append_indexed_dim_to_title(
+                var_label,
+                ds,
+                dim_eff,
+                idx,
+                separator=" @ ",
+                formatter=lambda value: f"{float(value):.2f}",
             )
-
-            if symmetric:
-                vmax_abs = max(abs(vmin), abs(vmax))
-                vmin, vmax = -vmax_abs, vmax_abs
-
-            clim, cmap = determine_clim_and_cmap(vmin, vmax)
-
-            if dim in ds.coords:
-                coord_val = float(ds[dim].isel({dim: idx}).values)
-                title = f"{var_label} @ {dim}={coord_val:.2f}"
-            else:
-                title = f"{var_label} @ {dim} index {idx}"
-
+            if dim_eff != dim:
+                title = f"{title} (using {dim_eff})"
             if "time" in da_var.dims:
-                if "time" in ds.coords:
-                    t_val = float(ds["time"].isel(time=t_idx).values)
-                    title += f", time={t_val:.2f}"
-                else:
-                    title += f", time index {t_idx}"
+                title = append_indexed_dim_to_title(
+                    title,
+                    ds,
+                    "time",
+                    t_idx,
+                    separator=", ",
+                    formatter=lambda value: f"{float(value):.2f}",
+                )
 
-            plot = sliced.hvplot(
-                x=xdim,
-                y=ydim,
-                cmap=cmap,
-                clim=clim,
-                colorbar=True,
-                title=title,
-                height=300,
-                responsive=True,
-            )
-
-            backend_opts = _build_backend_bounds(ds, xdim, ydim)
-
-            current_key = (var_name, dim, xdim, ydim)
+            current_key = (var_name, dim_eff, xdim, ydim)
+            extra_backend_opts = {}
             if axis_context["key"] != current_key:
                 if xdim in ds.coords:
                     x0 = float(ds[xdim].min(skipna=True).values)
                     x1 = float(ds[xdim].max(skipna=True).values)
-                    backend_opts["x_range.start"] = x0
-                    backend_opts["x_range.end"] = x1
-                    backend_opts["x_range.reset_start"] = x0
-                    backend_opts["x_range.reset_end"] = x1
+                    extra_backend_opts["x_range.start"] = x0
+                    extra_backend_opts["x_range.end"] = x1
+                    extra_backend_opts["x_range.reset_start"] = x0
+                    extra_backend_opts["x_range.reset_end"] = x1
                 if ydim in ds.coords:
                     y0 = float(ds[ydim].min(skipna=True).values)
                     y1 = float(ds[ydim].max(skipna=True).values)
-                    backend_opts["y_range.start"] = y0
-                    backend_opts["y_range.end"] = y1
-                    backend_opts["y_range.reset_start"] = y0
-                    backend_opts["y_range.reset_end"] = y1
+                    extra_backend_opts["y_range.start"] = y0
+                    extra_backend_opts["y_range.end"] = y1
+                    extra_backend_opts["y_range.reset_start"] = y0
+                    extra_backend_opts["y_range.reset_end"] = y1
                 axis_context["key"] = current_key
 
-            return plot.opts(backend_opts=backend_opts)
+            return plot_2d_heatmap(
+                sliced,
+                xdim=xdim,
+                ydim=ydim,
+                title=title,
+                full_da=da_var,
+                x_range=x_range,
+                y_range=y_range,
+                auto=auto,
+                trigger=trigger,
+                symmetric_cmap=symmetric,
+                bounds_source=ds,
+                extra_backend_opts=extra_backend_opts,
+            )
 
         dmap = hv.DynamicMap(
             _slice_fn_dynamic, streams=[range_stream, param_stream]
@@ -234,7 +294,7 @@ def make_slice_panel(ds, slice_dim=None):
 
         controls = pn.Column(*widgets, sizing_mode="stretch_width")
 
-        return pn.Row(plot, controls, sizing_mode="stretch_width")
+        return make_plot_with_controls_layout(plot, controls)
 
     # --- Fixed slice-dimension mode (cross-section-style, with animation) ---
     if slice_dim not in ds.dims:
@@ -243,9 +303,36 @@ def make_slice_panel(ds, slice_dim=None):
     controller = SliceController(var=labels[0])
     controller.param["var"].objects = labels
 
-    n = int(ds.sizes[slice_dim])
+    first_var_name = label_to_var[labels[0]]
+    first_dim_eff = _resolve_slice_dim_for_var(ds[first_var_name], slice_dim)
+    if first_dim_eff is None:
+        return pn.pane.Markdown("No compatible variables", sizing_mode="stretch_width")
+
+    n, _ = _shared_index_size(ds[first_var_name], slice_dim)
+    if n is None:
+        return pn.pane.Markdown("No compatible variables", sizing_mode="stretch_width")
+
     controller.index = 0
     controller.param["index"].bounds = (0, max(n - 1, 0))
+
+    def _update_fixed_index_bounds(_event):
+        var_label = controller.var
+        if var_label is None:
+            return
+
+        var_name = label_to_var.get(var_label)
+        if var_name is None:
+            return
+
+        n_loc, _dim_eff = _shared_index_size(ds[var_name], slice_dim)
+        if n_loc is None:
+            return
+
+        controller.param["index"].bounds = (0, max(n_loc - 1, 0))
+        if controller.index > n_loc - 1:
+            controller.index = n_loc - 1
+
+    controller.param.watch(_update_fixed_index_bounds, "var")
 
     # Configure optional time index if time dimension is present
     has_time = "time" in ds.dims
@@ -268,7 +355,7 @@ def make_slice_panel(ds, slice_dim=None):
     )
 
     @catchall
-    def slice_fn(x_range=None, y_range=None, **kwargs):
+    def slice_fn(x_range=None, y_range=None, **_kwargs):
         var_label = controller.var
         idx = controller.index
         t_idx = controller.time_index
@@ -282,59 +369,49 @@ def make_slice_panel(ds, slice_dim=None):
         var_name = label_to_var[var_label]
         da_var = ds[var_name]
 
-        if slice_dim not in da_var.dims:
+        indexers, dim_eff = _build_slice_indexers(da_var, slice_dim, idx)
+        if indexers is None:
             return hv.Curve([])
 
         # Slice along the primary slice dimension and, if available, time
-        slice_sel = {slice_dim: idx}
-        if "time" in da_var.dims:
-            slice_sel["time"] = t_idx
-
-        other_dims = [d for d in da_var.dims if d not in slice_sel]
-        if len(other_dims) != 2:
-            return hv.Curve([])
-
-        xdim, ydim = _select_plot_dims(other_dims)
+        sliced, xdim, ydim, _slice_sel = slice_to_2d(
+            da_var, **{**indexers, "time": t_idx}
+        )
         if xdim is None or ydim is None:
             return hv.Curve([])
-        sliced = da_var.isel(slice_sel)
-
-        vmin, vmax = _compute_slice_clim(
-            da_var, sliced, xdim, ydim, x_range, y_range, auto, trigger
+        title = append_indexed_dim_to_title(
+            var_label,
+            ds,
+            dim_eff,
+            idx,
+            separator=" @ ",
+            formatter=lambda value: f"{float(value):.2f}",
         )
-
-        if symmetric:
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
-
-        clim, cmap = determine_clim_and_cmap(vmin, vmax)
-
-        if slice_dim in ds.coords:
-            coord_val = float(ds[slice_dim].isel({slice_dim: idx}).values)
-            title = f"{var_label} @ {slice_dim}={coord_val:.2f}"
-        else:
-            title = f"{var_label} @ {slice_dim} index {idx}"
+        if dim_eff != slice_dim:
+            title = f"{title} (using {dim_eff})"
 
         if "time" in da_var.dims:
-            if "time" in ds.coords:
-                t_val = float(ds["time"].isel(time=t_idx).values)
-                title += f", time={t_val:.2f}"
-            else:
-                title += f", time index {t_idx}"
-
-        plot = sliced.hvplot(
-            x=xdim,
-            y=ydim,
-            cmap=cmap,
-            clim=clim,
-            colorbar=True,
+            title = append_indexed_dim_to_title(
+                title,
+                ds,
+                "time",
+                t_idx,
+                separator=", ",
+                formatter=lambda value: f"{float(value):.2f}",
+            )
+        return plot_2d_heatmap(
+            sliced,
+            xdim=xdim,
+            ydim=ydim,
             title=title,
-            height=300,
-            responsive=True,
+            full_da=da_var,
+            x_range=x_range,
+            y_range=y_range,
+            auto=auto,
+            trigger=trigger,
+            symmetric_cmap=symmetric,
+            bounds_source=ds,
         )
-
-        backend_opts = _build_backend_bounds(ds, xdim, ydim)
-        return plot.opts(backend_opts=backend_opts)
 
     dmap = hv.DynamicMap(slice_fn, streams=[range_stream, param_stream]).opts(
         framewise=False,
@@ -360,7 +437,7 @@ def make_slice_panel(ds, slice_dim=None):
 
     save_button = pn.widgets.Button(name="Save MP4 animation", button_type="success")
 
-    def _on_save_click(event):
+    def _on_save_click(_event):
         var_label = controller.var
         if var_label is None:
             return
@@ -371,10 +448,13 @@ def make_slice_panel(ds, slice_dim=None):
 
         da_var = ds[var_name]
 
-        if slice_dim not in da_var.dims:
+        dim_eff = _resolve_slice_dim_for_var(da_var, slice_dim)
+        if dim_eff is None:
             return
 
-        n_frames = int(ds.sizes.get(slice_dim, 0))
+        n_frames, _dim_eff = _shared_index_size(da_var, slice_dim)
+        if n_frames is None:
+            return
         if n_frames <= 0:
             return
 
@@ -382,62 +462,71 @@ def make_slice_panel(ds, slice_dim=None):
         if "time" in da_var.dims:
             base_sel["time"] = controller.time_index
 
-        other_dims = [d for d in da_var.dims if d not in base_sel and d != slice_dim]
-        if len(other_dims) != 2:
+        first_indexers, _first_dim = _build_slice_indexers(da_var, slice_dim, 0)
+        if first_indexers is None:
             return
 
-        xdim, ydim = _select_plot_dims(other_dims)
+        _first_slice, xdim, ydim, _first_sel = slice_to_2d(da_var, **{**first_indexers, **base_sel})
         if xdim is None or ydim is None:
             return
 
         # Use global clim over the variable for the animation
         vmin = float(da_var.min(skipna=True))
         vmax = float(da_var.max(skipna=True))
-        clim, cmap = determine_clim_and_cmap(vmin, vmax)
         frames = {}
         for i in range(n_frames):
-            sel = dict(base_sel)
-            sel[slice_dim] = i
-            sliced = da_var.isel(sel)
+            frame_indexers, frame_dim_eff = _build_slice_indexers(da_var, slice_dim, i)
+            if frame_indexers is None:
+                continue
 
-            if slice_dim in ds.coords:
-                coord_val = float(ds[slice_dim].isel({slice_dim: i}).values)
-                title = f"{var_label} @ {slice_dim}={coord_val:.2f}"
-            else:
-                title = f"{var_label} @ {slice_dim} index {i}"
+            sliced, _xdim, _ydim, _sel = slice_to_2d(
+                da_var, **{**frame_indexers, **base_sel}
+            )
+            if sliced is None:
+                continue
+
+            title = append_indexed_dim_to_title(
+                var_label,
+                ds,
+                frame_dim_eff,
+                i,
+                separator=" @ ",
+                formatter=lambda value: f"{float(value):.2f}",
+            )
+            if frame_dim_eff != slice_dim:
+                title = f"{title} (using {frame_dim_eff})"
 
             if "time" in da_var.dims:
                 t_idx = base_sel.get("time", 0)
-                if "time" in ds.coords:
-                    t_val = float(ds["time"].isel(time=t_idx).values)
-                    title += f", time={t_val:.2f}"
-                else:
-                    title += f", time index {t_idx}"
+                title = append_indexed_dim_to_title(
+                    title,
+                    ds,
+                    "time",
+                    t_idx,
+                    separator=", ",
+                    formatter=lambda value: f"{float(value):.2f}",
+                )
 
-            frame_plot = sliced.hvplot(
-                x=xdim,
-                y=ydim,
-                clim=clim,
-                cmap=cmap,
-                colorbar=True,
+            frames[i] = plot_2d_heatmap(
+                sliced,
+                xdim=xdim,
+                ydim=ydim,
                 title=title,
+                bounds_source=ds,
+                vmin=vmin,
+                vmax=vmax,
                 height=300,
-                width=600,
-                responsive=True,
             )
 
-            backend_opts = _build_backend_bounds(ds, xdim, ydim)
-            frames[i] = frame_plot.opts(backend_opts=backend_opts)
-
-        hmap = hv.HoloMap(frames, kdims=[slice_dim])
-        filename = f"{var_name}_{slice_dim}_animation.html"
+        hmap = hv.HoloMap(frames, kdims=[dim_eff])
+        filename = f"{var_name}_{dim_eff}_animation.html"
         try:
             hvplot.save(hmap, filename, fps=24)
         except Exception as e:
             # If saving fails (e.g. missing ffmpeg), just ignore
-            with open("err.log", "w") as file:
+            with open("err.log", "w", encoding="utf-8") as file:
                 file.write(
-                    f"Error saving animation: {e}\n{filename=}\n{var_name=}\n{slice_dim=}\n{n_frames=}"
+                    f"Error saving animation: {e}\n{filename=}\n{var_name=}\n{slice_dim=}\n{dim_eff=}\n{n_frames=}"
                 )
             return
 
@@ -460,4 +549,4 @@ def make_slice_panel(ds, slice_dim=None):
 
     controls = pn.Column(*widgets, sizing_mode="stretch_width")
 
-    return pn.Row(plot, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot, controls)

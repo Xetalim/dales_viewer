@@ -1,0 +1,174 @@
+[
+  {
+    "id": "profiles",
+    "title": "profiles.001.nc",
+    "key": "prof",
+    "loader_ref": "load_profiles",
+    "builder_ref": "build_heat_panel",
+    "exists_files": ["run_001/profiles.001.nc"]
+  },
+  {
+    "id": "tmser",
+    "title": "tmser.001.nc",
+    "key": "tmser",
+    "loader_ref": "load_tmser",
+    "builder_ref": "build_tmser_panel",
+    "exists_files": ["run_001/tmser.001.nc"]
+  },
+  {
+    "id": "cape",
+    "title": "cape.nc",
+    "key": "cape_raw",
+    "loader_ref": "load_cape",
+    "builder_ref": "build_cape_panel",
+    "exists_files": ["cape.nc", "run_001/cape.001.nc"]
+  },
+  {
+    "id": "surfcross",
+    "title": "surfcross.nc",
+    "key": "crosses_raw",
+    "loader_ref": "load_surfcross",
+    "builder_ref": "build_surfcross_panel",
+    "exists_files": ["surfcross.nc", "run_001/surfcross.001.nc"]
+  },
+  {
+    "id": "sampling",
+    "title": "sampling.001.nc",
+    "key": "sampling",
+    "loader_ref": "load_sampling",
+    "builder_ref": "build_heat_panel",
+    "exists_files": ["run_001/sampling.001.nc"]
+  },
+  {
+    "id": "samptend",
+    "title": "samptend.001.nc",
+    "key": "samptend",
+    "loader_ref": "load_samptend",
+    "builder_ref": "build_heat_panel",
+    "exists_files": ["run_001/samptend.001.nc"]
+  },
+  {
+    "id": "crossxz",
+    "title": "crossxz.nc",
+    "key": "crossxz",
+    "loader_ref": "load_crossxz",
+    "builder_ref": "build_slice_yt_panel",
+    "exists_files": ["crossxz.nc"],
+    "exists_globs": ["run_001/crossxz.*.001.nc"]
+  },
+  {
+    "id": "crossyz",
+    "title": "crossyz.nc",
+    "key": "crossyz",
+    "loader_ref": "load_crossyz",
+    "builder_ref": "build_slice_xt_panel",
+    "exists_files": ["crossyz.nc"],
+    "exists_globs": ["run_001/crossyz.*.001.nc"]
+  },
+  {
+    "id": "crossxy",
+    "title": "crossxy.nc",
+    "key": "crossxy",
+    "loader_ref": "load_crossxy",
+    "builder_ref": "build_slice_zt_panel",
+    "exists_files": ["crossxy.nc"],
+    "exists_globs": ["run_001/crossxy.*.001.nc"]
+  },
+  {
+    "id": "fielddump",
+    "title": "fielddump.nc",
+    "key": "fielddump",
+    "loader_ref": "load_fielddump",
+    "builder_ref": "build_fielddump_panel",
+    "exists_files": ["fielddump.nc", "run_001/fielddump.001.nc"]
+  },
+  {
+    "id": "samptend_all",
+    "title": "samptend_all.001.nc",
+    "key": "samptend_all",
+    "loader_ref": "load_samptend_all",
+    "builder_ref": "build_fielddump_panel",
+    "exists_files": ["run_001/samptend_all.001.nc"]
+  },
+  {
+    "id": "all_dump",
+    "title": "all_dump.nc",
+    "key": "dump",
+    "loader_ref": "load_all_dump",
+    "builder_ref": "build_fielddump_panel",
+    "exists_files": ["all_dump.nc"]
+  },
+  {
+    "id": "openboundaries",
+    "title": "openboundaries.inp.*.nc",
+    "key": "openboundaries",
+    "loader_ref": "load_openboundaries",
+    "builder_ref": "build_slice_time_panel",
+    "exists_globs": ["input/openboundaries.inp.*.nc"]
+  },
+  {
+    "id": "lsm",
+    "title": "lsm.inp_001.nc",
+    "key": "lsm",
+    "loader_ref": "load_lsm",
+    "builder_ref": "build_lsm_panel",
+    "exists_files": ["input/lsm.inp_001.nc"]
+  },
+  {
+    "id": "inslurb",
+    "title": "inslurb.001.nc",
+    "key": "inslurb",
+    "loader_ref": "load_inslurb",
+    "builder_ref": "build_2d_xy_panel",
+    "exists_files": ["input/inslurb.001.nc"]
+  },
+  {
+    "id": "init",
+    "title": "init.001.nc",
+    "key": "init",
+    "loader_ref": "load_init",
+    "builder_ref": "build_init_profile_panel",
+    "exists_files": ["input/init.001.nc"]
+  },
+  {
+    "id": "forcings",
+    "title": "forcings.001.nc",
+    "key": "forcings",
+    "loader_ref": "load_forcings",
+    "builder_ref": "build_heat_panel",
+    "exists_files": ["input/forcings.001.nc"]
+  },
+  {
+    "id": "slrbcross",
+    "title": "slrbcross.nc",
+    "key": "slrbcross",
+    "loader_ref": "load_slrbcross",
+    "builder_ref": "build_slrbcross_panel",
+    "exists_files": ["slrbcross.nc"],
+    "exists_globs": ["run_001/slurbcross_*.nc"]
+  },
+  {
+    "id": "radfield",
+    "title": "radfield.nc",
+    "key": "radfield_raw",
+    "loader_ref": "load_radfield",
+    "builder_ref": "build_radfield_panel",
+    "exists_files": ["radfield.nc", "run_001/radfield.001.nc"]
+  },
+  {
+    "id": "virtualmeasurement",
+    "title": "virtualmeasurement.X.Y.nc",
+    "key": "virtualmeasurement",
+    "loader_ref": "load_virtualmeasurement",
+    "builder_ref": "build_virtualmeasurement_panel",
+    "point_prefix": "virtualmeasurement"
+  },
+  {
+    "id": "colstat",
+    "title": "colstat.001.nc",
+    "key": "colstat",
+    "loader_ref": "load_colstat",
+    "builder_ref": "build_colstat_panel",
+    "point_prefix": "colstat"
+  }
+]

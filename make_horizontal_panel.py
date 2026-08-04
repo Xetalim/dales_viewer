@@ -1,11 +1,11 @@
-from controllers import _select_plot_dims
 from helpers import (
-    _build_backend_bounds,
-    _compute_slice_clim,
     _make_clim_controls,
+    append_indexed_dim_to_title,
     catchall,
-    determine_clim_and_cmap,
     get_label_to_var,
+    make_plot_with_controls_layout,
+    plot_2d_heatmap,
+    slice_to_2d,
 )
 
 import holoviews as hv
@@ -37,6 +37,7 @@ def make_horizontal_panel(
     toggle_label: unused — kept for API compatibility.
     ds_lsm: unused — kept for API compatibility.
     """
+    _ = stat_fn, toggle_label, ds_lsm
 
     label_to_var = get_label_to_var(ds_raw)
     labels = list(label_to_var.keys())
@@ -64,7 +65,7 @@ def make_horizontal_panel(
     )
 
     @catchall
-    def hz_fn(x_range=None, y_range=None, **kwargs):
+    def hz_fn(x_range=None, y_range=None, **_kwargs):
         label = controller.label
         if label is None:
             return hv.Curve([])
@@ -77,57 +78,31 @@ def make_horizontal_panel(
         if slice_dim not in da.dims:
             return hv.Curve([])
 
-        slice_sel = {slice_dim: controller.time_index}
-        other_dims = [d for d in da.dims if d not in slice_sel]
-        if len(other_dims) != 2:
-            return hv.Curve([])
-
-        xdim, ydim = _select_plot_dims(other_dims)
+        sliced, xdim, ydim, _slice_sel = slice_to_2d(
+            da, **{slice_dim: controller.time_index}
+        )
         if xdim is None or ydim is None:
             return hv.Curve([])
-
-        sliced = da.isel(slice_sel, drop=True)
-
-        vmin, vmax = _compute_slice_clim(
-            da,
+        title = append_indexed_dim_to_title(
+            label,
+            ds_raw,
+            slice_dim,
+            controller.time_index,
+            separator=" @ ",
+        )
+        return plot_2d_heatmap(
             sliced,
-            xdim,
-            ydim,
-            x_range,
-            y_range,
-            controller.auto,
-            controller.trigger,
-        )
-
-        if controller.symmetric_cmap:
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
-
-        clim, cmap = determine_clim_and_cmap(vmin, vmax)
-
-        title = label
-        if slice_dim in da.dims:
-            if slice_dim in ds_raw.coords:
-                slice_val = (
-                    ds_raw[slice_dim].isel({slice_dim: controller.time_index}).values
-                )
-                title += f" @ {slice_dim}={str(slice_val)[:19]}"
-            else:
-                title += f" @ {slice_dim} index {controller.time_index}"
-
-        plot = sliced.hvplot(
-            x=xdim,
-            y=ydim,
-            cmap=cmap,
-            clim=clim,
-            colorbar=True,
+            xdim=xdim,
+            ydim=ydim,
             title=title,
-            height=300,
-            responsive=True,
+            full_da=da,
+            x_range=x_range,
+            y_range=y_range,
+            auto=controller.auto,
+            trigger=controller.trigger,
+            symmetric_cmap=controller.symmetric_cmap,
+            bounds_source=ds_raw,
         )
-
-        backend_opts = _build_backend_bounds(ds_raw, xdim, ydim)
-        return plot.opts(backend_opts=backend_opts)
 
     hz_dmap = hv.DynamicMap(hz_fn, streams=[hz_range_stream, hz_param_stream]).opts(
         framewise=False,
@@ -159,7 +134,7 @@ def make_horizontal_panel(
         auto_checkbox,
         button_view,
         button_global,
-        width=250,
+        sizing_mode="stretch_width",
     )
 
-    return pn.Row(hz_plot, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(hz_plot, controls)

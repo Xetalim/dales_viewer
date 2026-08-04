@@ -1,0 +1,6 @@
+holoviews
+hvplot
+xarray
+dask
+numpy
+param

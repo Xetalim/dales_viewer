@@ -9,8 +9,8 @@ import param
 import holoviews as hv
 import panel as pn
 from holoviews import streams
-
-from helpers import get_label_to_var
+import hvplot.xarray  # noqa: F401
+from helpers import get_label_to_var, make_plot_with_controls_layout
 
 
 class _VMController(param.Parameterized):
@@ -46,7 +46,7 @@ def make_virtualmeasurement_panel(datasets):
     controller.param["variable"].objects = var_labels
     controller.variable = var_labels[0] if var_labels else None
 
-    def _update_vars(event):
+    def _update_vars(_event):
         ltv = _current_label_to_var()
         new_labels = list(ltv.keys())
         controller.param["variable"].objects = new_labels
@@ -56,7 +56,7 @@ def make_virtualmeasurement_panel(datasets):
 
     param_stream = streams.Params(controller, parameters=["file_label", "variable"])
 
-    def plot_fn(**kwargs):
+    def plot_fn(**_kwargs):
         ds = datasets.get(controller.file_label)
         if ds is None:
             return hv.Curve([])
@@ -110,6 +110,6 @@ def make_virtualmeasurement_panel(datasets):
     var_select = pn.widgets.Select.from_param(
         controller.param.variable, name="Variable"
     )
-    controls = pn.Column(file_select, var_select, width=250)
+    controls = pn.Column(file_select, var_select, sizing_mode="stretch_width")
 
-    return pn.Row(plot, controls, sizing_mode="stretch_width")
+    return make_plot_with_controls_layout(plot, controls)
