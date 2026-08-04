@@ -4,3 +4,5 @@ xarray
 dask
 numpy
 param
+netcdf4
+h5netcdf
