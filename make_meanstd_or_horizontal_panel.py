@@ -55,6 +55,7 @@ def make_meanstd_or_horizontal_panel(
     """
 
     label_to_var = get_label_to_var(ds_raw)
+    horizontal_plot_size = 520
     labels = list(label_to_var.keys())
 
     if not labels:
@@ -201,6 +202,10 @@ def make_meanstd_or_horizontal_panel(
             trigger=controller.trigger,
             symmetric_cmap=controller.symmetric_cmap,
             bounds_source=base_ds,
+            height=horizontal_plot_size,
+            width=horizontal_plot_size,
+            responsive=False,
+            equal_aspect=True,
         )
 
     hz_dmap = hv.DynamicMap(hz_fn, streams=[hz_range_stream, hz_param_stream]).opts(
@@ -209,7 +214,7 @@ def make_meanstd_or_horizontal_panel(
         axiswise=True,
     )
     hz_range_stream.source = hz_dmap
-    hz_plot = pn.panel(hz_dmap, sizing_mode="stretch_width")
+    hz_plot = pn.panel(hz_dmap, sizing_mode="fixed")
 
     plot_area = pn.Column(ms_plot, sizing_mode="stretch_width")
 

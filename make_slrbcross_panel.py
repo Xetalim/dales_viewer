@@ -71,6 +71,8 @@ class SLRBController(param.Parameterized):
 def make_slrbcross_panel(ds, ds_lsm=None):
     """Panel for slrbcross.nc with category filtering, mean/std and masking."""
 
+    horizontal_plot_size = 520
+
     categories = _parse_slrb_categories(ds)
     cat_names = list(categories.keys())
 
@@ -251,7 +253,10 @@ def make_slrbcross_panel(ds, ds_lsm=None):
             auto=controller.auto,
             trigger=controller.trigger,
             bounds_source=base_ds,
-            # responsive=True,
+            height=horizontal_plot_size,
+            width=horizontal_plot_size,
+            responsive=False,
+            equal_aspect=True,
         )
 
     hz_dmap = hv.DynamicMap(hz_fn, streams=[hz_range_stream, hz_param_stream]).opts(
@@ -260,7 +265,7 @@ def make_slrbcross_panel(ds, ds_lsm=None):
         axiswise=True,
     )
     hz_range_stream.source = hz_dmap
-    hz_plot = pn.panel(hz_dmap, sizing_mode="stretch_width")
+    hz_plot = pn.panel(hz_dmap, sizing_mode="fixed")
 
     plot_area = pn.Column(ms_plot, sizing_mode="stretch_width")
 

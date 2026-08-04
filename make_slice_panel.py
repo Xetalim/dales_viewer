@@ -475,7 +475,9 @@ def make_slice_panel(ds, slice_dim=None):
         if first_indexers is None:
             return
 
-        _first_slice, xdim, ydim, _first_sel = slice_to_2d(da_var, **{**first_indexers, **base_sel})
+        _first_slice, xdim, ydim, _first_sel = slice_to_2d(
+            da_var, **{**first_indexers, **base_sel}
+        )
         if xdim is None or ydim is None:
             return
 
