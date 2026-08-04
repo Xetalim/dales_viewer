@@ -42,7 +42,6 @@ def open_mfdataset_optional(pattern, postprocess=None):
 
 
 def virt_residual(ds):
-    ds["residual"] = -ds["radbal"] + -ds["shf"] + -ds["lhf"] + ds["ghf"]
     return ds
 
 
