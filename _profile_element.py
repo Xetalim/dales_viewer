@@ -30,7 +30,7 @@ def _profile_element(ds, da, label, ydim, time_index):
         title=label,
         xlim=(xmin, xmax),
         frame_height=300,
-        responsive="width",
+        responsive=True,
         framewise=True,
         shared_axes=False,
         axiswise=True,

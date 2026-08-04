@@ -12,6 +12,7 @@ from file_catalog_config import (
 from file_function_registry import make_builder_registry, make_loader_registry
 
 hv.extension("bokeh")
+pn.extension(sizing_mode="stretch_width")
 
 # Ensure that panning/zooming in one plot does not affect others by
 # disabling axis sharing globally. Individual panels can still override
@@ -55,7 +56,7 @@ def make_app(folder):
     _busy = [False]  # re-entrancy guard for the selection watcher
     available_titles = [spec["title"] for spec in runtime_specs]
 
-    main_col = pn.Column(sizing_mode="stretch_width")
+    main_col = pn.Column(sizing_mode="stretch_width", styles={"min-width": "0"})
     status = pn.pane.Markdown("", sizing_mode="stretch_width")
     sidebar_visible = pn.widgets.Toggle(
         name="☰",

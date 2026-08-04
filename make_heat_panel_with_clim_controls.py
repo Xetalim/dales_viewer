@@ -59,7 +59,7 @@ def make_heat_panel_with_clim_controls(ds):
                     x=dim,
                     title=label,
                     height=300,
-                    responsive="width",
+                    responsive=True,
                 )
 
             # If there is a recognizable vertical dimension, treat it as
@@ -72,7 +72,7 @@ def make_heat_panel_with_clim_controls(ds):
                 ylabel=ydim,
                 title=label,
                 height=300,
-                responsive="width",
+                responsive=True,
                 framewise=False,
                 shared_axes=False,
                 axiswise=True,
@@ -92,7 +92,7 @@ def make_heat_panel_with_clim_controls(ds):
                 x="time",
                 title=label,
                 height=300,
-                responsive="width",
+                responsive=True,
             ).opts(
                 backend_opts={
                     "x_range.bounds": (
@@ -190,7 +190,7 @@ def make_heat_panel_with_clim_controls(ds):
                 x="time",
                 title=label,
                 height=300,
-                responsive="width",
+                responsive=True,
             )
 
         da_profile = _reduce_to_time_and_vertical(da, ydim)
@@ -212,7 +212,7 @@ def make_heat_panel_with_clim_controls(ds):
         shared_axes=False,
         axiswise=True,
         height=300,
-        responsive="width",
+        responsive=True,
     )
 
     profile_plot = pn.panel(profile_dmap, sizing_mode="stretch_width")

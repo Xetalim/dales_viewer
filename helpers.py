@@ -333,7 +333,7 @@ def plot_2d_heatmap(
         "colorbar": True,
         "title": title,
         "frame_height": height,
-        "responsive": "width",
+        "responsive": True,
     }
 
     plot = da.hvplot(**plot_kwargs)
@@ -371,7 +371,7 @@ def make_plot_with_controls_layout(plot, controls, *, controls_width=250):
     plot_col = pn.Column(
         plot,
         sizing_mode="stretch_width",
-        styles={"min-width": "0", "min-height": "320px", "overflow-x": "hidden"},
+        styles={"min-width": "0", "min-height": "320px"},
     )
     controls_col = pn.Column(
         controls,
@@ -379,7 +379,6 @@ def make_plot_with_controls_layout(plot, controls, *, controls_width=250):
         styles={
             "min-width": "0",
             "max-width": f"{controls_width}px",
-            "overflow-x": "hidden",
         },
     )
     return pn.Column(
