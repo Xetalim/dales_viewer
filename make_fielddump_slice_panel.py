@@ -1,7 +1,6 @@
 import numpy as np
 import panel as pn
 import param
-from bokeh.models import CustomJS
 
 from make_slice_panel import make_slice_panel
 
@@ -26,6 +25,23 @@ class DalesVolumeViewer(param.Parameterized):
             min(ds["ql"].sizes["xt"], ds["ql"].sizes["yt"]),
         )
         self._volume = None
+        self._ql_cache = None
+        self._data_selection = None
+        self.quantization_step = None
+
+    def _cache_field(self):
+        source = self.ds["ql"].copy(deep=False).load()
+        values = np.nan_to_num(
+            source.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0
+        )
+        np.maximum(values, 0, out=values)
+        maximum = float(values.max())
+        self.quantization_step = maximum / 255 if maximum > 0 else 1.0
+        if maximum > 0:
+            values /= maximum
+            values *= 255
+        np.rint(values, out=values)
+        self._ql_cache = source.copy(data=values.astype(np.uint8))
 
     def view(self):
         if self._volume is None:
@@ -80,19 +96,26 @@ class DalesVolumeViewer(param.Parameterized):
             });
         """,
         )
+        controls = pane.controls(
+            parameters=[
+                "colormap", "display_volume", "display_slices", "sampling",
+                "edge_gradient", "shadow", "ambient", "diffuse", "specular",
+            ],
+            jslink=True,
+        )
+        controls.sizing_mode = "stretch_width"
         return pn.Column(
             pn.Row(pn.Spacer(sizing_mode="stretch_width"), fullscreen),
-            pn.Row(
-                pane.controls(jslink=True),
-                pane,
-                sizing_mode="stretch_width",
-            ),
+            controls,
+            pane,
             sizing_mode="stretch_width",
         )
 
     @param.depends("time", "z_stride", "xy_stride", "vertical_exaggeration", watch=True)
     def _update_volume(self):
-        ql = self.ds["ql"]
+        if self._ql_cache is None:
+            self._cache_field()
+        ql = self._ql_cache
         if "time" in ql.dims:
             ql = ql.isel(time=self.time)
         ql = (
@@ -102,7 +125,6 @@ class DalesVolumeViewer(param.Parameterized):
                 zt=slice(None, None, self.z_stride),
             )
             .transpose("xt", "yt", "zt")
-            .load()
         )
         spacing = []
         for dim, stride in (
@@ -120,13 +142,11 @@ class DalesVolumeViewer(param.Parameterized):
                 spacing.append(1.0)
 
         spacing[2] *= self.vertical_exaggeration
-        data = np.nan_to_num(
-            ql.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0
-        )
+        selection = (self.time, self.xy_stride, self.z_stride)
         origin = tuple(float(ql[dim][0]) for dim in ("xt", "yt", "zt"))
         if self._volume is None:
             self._volume = pn.pane.VTKVolume(
-                data,
+                ql.values,
                 spacing=tuple(spacing),
                 origin=origin,
                 display_volume=True,
@@ -138,9 +158,11 @@ class DalesVolumeViewer(param.Parameterized):
                 height=520,
             )
         else:
-            self._volume.param.update(
-                object=data, spacing=tuple(spacing), origin=origin
-            )
+            updates = {"spacing": tuple(spacing), "origin": origin}
+            if selection != self._data_selection:
+                updates["object"] = ql.values
+            self._volume.param.update(**updates)
+        self._data_selection = selection
 
 
 def make_fielddump_slice_panel(ds):
