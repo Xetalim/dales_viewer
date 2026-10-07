@@ -6,34 +6,6 @@ from bokeh.models import CustomJS
 from make_slice_panel import make_slice_panel
 
 
-class _DenseVTKVolume(pn.pane.VTKVolume):
-    def _get_model(self, doc, root=None, parent=None, comm=None):
-        model = super()._get_model(doc, root, parent, comm)
-        opacity = CustomJS(args={"volume": model}, code="""
-            const applyOpacity = () => {
-                const renderer = volume.renderer_el;
-                if (!renderer) return;
-                const actor = renderer.getRenderer().getVolumes()[0];
-                if (!actor) return;
-                const grid = actor.getMapper().getInputData();
-                const bounds = grid.getBounds();
-                const diagonal = Math.hypot(
-                    bounds[1] - bounds[0], bounds[3] - bounds[2],
-                    bounds[5] - bounds[4]
-                );
-                const distance = diagonal / Math.max(...grid.getDimensions());
-                actor.getProperty().setScalarOpacityUnitDistance(
-                    0, Math.max(distance / 3, Number.EPSILON)
-                );
-                renderer.getRenderWindow().render();
-            };
-            requestAnimationFrame(() => requestAnimationFrame(applyOpacity));
-        """)
-        model.js_on_change("data", opacity)
-        model.js_on_change("camera", opacity)
-        return model
-
-
 class DalesVolumeViewer(param.Parameterized):
     """Render ql on a regular VTK grid using mean coordinate spacing."""
 
@@ -65,7 +37,9 @@ class DalesVolumeViewer(param.Parameterized):
         fullscreen = pn.widgets.Button(
             name="Fullscreen", icon="arrows-maximize", width=140
         )
-        fullscreen.js_on_click(args={"volume": pane}, code="""
+        fullscreen.js_on_click(
+            args={"volume": pane},
+            code="""
             const renderer = volume.renderer_el;
             if (!renderer) return;
             if (document.fullscreenElement) {
@@ -104,7 +78,8 @@ class DalesVolumeViewer(param.Parameterized):
                 window.removeEventListener("resize", resize);
                 console.warn("Could not enter fullscreen", error);
             });
-        """)
+        """,
+        )
         return pn.Column(
             pn.Row(pn.Spacer(sizing_mode="stretch_width"), fullscreen),
             pn.Row(
@@ -150,7 +125,7 @@ class DalesVolumeViewer(param.Parameterized):
         )
         origin = tuple(float(ql[dim][0]) for dim in ("xt", "yt", "zt"))
         if self._volume is None:
-            self._volume = _DenseVTKVolume(
+            self._volume = pn.pane.VTKVolume(
                 data,
                 spacing=tuple(spacing),
                 origin=origin,
@@ -186,18 +161,26 @@ def make_fielddump_slice_panel(ds):
     viewer = DalesVolumeViewer(ds)
     time_max = viewer.param.time.bounds[1]
     time_slider = pn.widgets.IntSlider(
-        name="Time index", start=0, end=max(time_max, 1), value=viewer.time,
-        disabled=time_max == 0, sizing_mode="stretch_width",
+        name="Time index",
+        start=0,
+        end=max(time_max, 1),
+        value=viewer.time,
+        disabled=time_max == 0,
+        sizing_mode="stretch_width",
     )
     time_slider.param.watch(
         lambda event: setattr(viewer, "time", event.new), "value_throttled"
     )
-    controls = pn.Column(time_slider, pn.Param(
-        viewer,
-        parameters=["z_stride", "xy_stride", "vertical_exaggeration"],
-        show_name=False,
+    controls = pn.Column(
+        time_slider,
+        pn.Param(
+            viewer,
+            parameters=["z_stride", "xy_stride", "vertical_exaggeration"],
+            show_name=False,
+            sizing_mode="stretch_width",
+        ),
         sizing_mode="stretch_width",
-    ), sizing_mode="stretch_width")
+    )
     volume = pn.Column(
         controls,
         pn.panel(viewer.volume_view, defer_load=True),
