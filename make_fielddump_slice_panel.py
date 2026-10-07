@@ -11,6 +11,9 @@ class DalesVolumeViewer(param.Parameterized):
     time = param.Integer(default=0, bounds=(0, None), label="Time index")
     z_stride = param.Integer(default=1, bounds=(1, None), label="Z stride")
     xy_stride = param.Integer(default=1, bounds=(1, None), label="XY stride")
+    vertical_exaggeration = param.Number(
+        default=3.0, bounds=(0.1, 20.0), label="Vertical exaggeration"
+    )
 
     def __init__(self, ds, **params):
         self.ds = ds
@@ -21,9 +24,17 @@ class DalesVolumeViewer(param.Parameterized):
             1,
             min(ds["ql"].sizes["xt"], ds["ql"].sizes["yt"]),
         )
+        self._volume = None
 
-    @param.depends("time", "z_stride", "xy_stride")
     def view(self):
+        if self._volume is None:
+            self._update_volume()
+        return self._volume
+
+    @param.depends(
+        "time", "z_stride", "xy_stride", "vertical_exaggeration", watch=True
+    )
+    def _update_volume(self):
         ql = self.ds["ql"]
         if "time" in ql.dims:
             ql = ql.isel(time=self.time)
@@ -51,20 +62,28 @@ class DalesVolumeViewer(param.Parameterized):
             else:
                 spacing.append(1.0)
 
-        return pn.pane.VTKVolume(
-            np.nan_to_num(
-                ql.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0
-            ),
-            spacing=tuple(spacing),
-            origin=tuple(float(ql[dim][0]) for dim in ("xt", "yt", "zt")),
-            display_volume=True,
-            edge_gradient=0,
-            sampling=0.4,
-            orientation_widget=True,
-            controller_expanded=True,
-            sizing_mode="stretch_width",
-            height=520,
+        spacing[2] *= self.vertical_exaggeration
+        data = np.nan_to_num(
+            ql.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0
         )
+        origin = tuple(float(ql[dim][0]) for dim in ("xt", "yt", "zt"))
+        if self._volume is None:
+            self._volume = pn.pane.VTKVolume(
+                data,
+                spacing=tuple(spacing),
+                origin=origin,
+                display_volume=True,
+                edge_gradient=0,
+                sampling=0.4,
+                orientation_widget=True,
+                controller_expanded=True,
+                sizing_mode="stretch_width",
+                height=520,
+            )
+        else:
+            self._volume.param.update(
+                object=data, spacing=tuple(spacing), origin=origin
+            )
 
 
 def make_fielddump_slice_panel(ds):
@@ -85,7 +104,7 @@ def make_fielddump_slice_panel(ds):
     viewer = DalesVolumeViewer(ds)
     controls = pn.Param(
         viewer,
-        parameters=["time", "z_stride", "xy_stride"],
+        parameters=["time", "z_stride", "xy_stride", "vertical_exaggeration"],
         show_name=False,
         sizing_mode="stretch_width",
     )
