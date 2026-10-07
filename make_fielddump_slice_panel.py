@@ -1,3 +1,4 @@
+import numpy as np
 import panel as pn
 import param
 
@@ -17,7 +18,8 @@ class DalesVolumeViewer(param.Parameterized):
         self.param.time.bounds = (0, max(ds["ql"].sizes.get("time", 1) - 1, 0))
         self.param.z_stride.bounds = (1, ds["ql"].sizes["zt"])
         self.param.xy_stride.bounds = (
-            1, min(ds["ql"].sizes["xt"], ds["ql"].sizes["yt"])
+            1,
+            min(ds["ql"].sizes["xt"], ds["ql"].sizes["yt"]),
         )
 
     @param.depends("time", "z_stride", "xy_stride")
@@ -50,15 +52,18 @@ class DalesVolumeViewer(param.Parameterized):
                 spacing.append(1.0)
 
         return pn.pane.VTKVolume(
-            ql.values,
+            np.nan_to_num(
+                ql.values.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0
+            ),
             spacing=tuple(spacing),
             origin=tuple(float(ql[dim][0]) for dim in ("xt", "yt", "zt")),
             display_volume=True,
+            edge_gradient=0,
             sampling=0.4,
             orientation_widget=True,
             controller_expanded=True,
-            sizing_mode="stretch_both",
-            min_height=520,
+            sizing_mode="stretch_width",
+            height=520,
         )
 
 

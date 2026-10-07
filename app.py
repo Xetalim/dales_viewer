@@ -12,7 +12,7 @@ from file_catalog_config import (
 from file_function_registry import make_builder_registry, make_loader_registry
 
 hv.extension("bokeh")
-pn.extension(sizing_mode="stretch_width")
+pn.extension("vtk", sizing_mode="stretch_width")
 
 # Ensure that panning/zooming in one plot does not affect others by
 # disabling axis sharing globally. Individual panels can still override
